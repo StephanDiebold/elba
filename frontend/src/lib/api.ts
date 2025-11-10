@@ -169,15 +169,23 @@ export async function fetchMe(token?: string): Promise<any | null> {
 }
 
 /* ===================================================================
-   AUTH: Register / Login / Logout
+   STAMMDATEN
    =================================================================== */
 
-/** Payload aus der Register-Form (name,email,password) */
-export type RegisterForm = {
-  name: string;
-  email: string;
-  password: string;
-};
+export type Kammer = { kammer_id: number; kammer_name: string };
+export type Bezirkskammer = { bezirkskammer_id: number; bezirkskammer_name: string; kammer_id: number };
+
+export async function getKammern(): Promise<Kammer[]> {
+  return req<Kammer[]>("/stammdaten/kammer", { method: "GET" });
+}
+
+export async function getBezirkskammern(kammer_id: number): Promise<Bezirkskammer[]> {
+  return req<Bezirkskammer[]>(`/stammdaten/bezirkskammer?kammer_id=${kammer_id}`, { method: "GET" });
+}
+
+/* ===================================================================
+   AUTH: Register / Login / Logout
+   =================================================================== */
 
 /** Antwort vom Backend bei erfolgreicher Registrierung */
 export type RegisterResponse = {
@@ -186,14 +194,23 @@ export type RegisterResponse = {
   is_active: boolean;
 };
 
-export async function register(body: RegisterForm): Promise<RegisterResponse> {
+/** Neues Register-Payload (Backend: /auth/register) */
+export type RegisterPayload = {
+  email: string;
+  password: string;
+  vorname: string;
+  nachname: string;
+  mobilnummer?: string | null;
+  geburtstag?: string | null; // yyyy-mm-dd
+  kammer_id: number;
+  bezirkskammer_id?: number | null;
+};
+
+/** Registrierung mit erweiterten Feldern */
+export async function register(payload: RegisterPayload): Promise<RegisterResponse> {
   return req<RegisterResponse>("/auth/register", {
     method: "POST",
-    body: JSON.stringify({
-      email: body.email,
-      password: body.password,
-      display_name: body.name,
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -256,6 +273,10 @@ export const api = {
   login,
   logout,
   fetchMe,
+
+  // stammdaten
+  getKammern,
+  getBezirkskammern,
 
   // helpers
   getJson,
