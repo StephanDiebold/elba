@@ -4,11 +4,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from .settings import ALLOW_ORIGINS as ENV_ALLOW_ORIGINS, ALLOW_ORIGIN_REGEX
 from .database import engine, Base
-from .routes import health, auth, stammdaten
+from .routes import health, auth, stammdaten ,schedule
 
 app = FastAPI(title="ELBA API", version="0.0.0")
 app.include_router(auth.router)
 app.include_router(stammdaten.router)
+app.include_router(schedule.router, prefix="/schedule", tags=["schedule"])
 
 # bekannte Defaults (lokal + prod)
 default_origins = [

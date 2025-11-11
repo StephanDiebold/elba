@@ -385,13 +385,13 @@ export default function RegisterPage() {
                   <FormControl>
                     <Input
                       type="date"
-                      placeholder="YYYY-MM-DD"
+                      placeholder="TT.MM.YYYY"
                       {...field}
                       aria-invalid={hasErr("geburtstag")}
                       aria-describedby={hasErr("geburtstag") ? ariaErrId("geburtstag") : undefined}
                     />
                   </FormControl>
-                  <FormDescription>Format: YYYY-MM-DD (z. B. 1972-12-15).</FormDescription>
+                  <FormDescription>Format: TT.MM.YYYY (z. B. 15.12.1972).</FormDescription>
                   <FormMessage id={ariaErrId("geburtstag")} />
                 </FormItem>
               )}
