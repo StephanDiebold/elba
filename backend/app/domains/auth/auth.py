@@ -1,6 +1,7 @@
-# app/routes/auth.py
+# app/domains/auth/auth.py
 import os
-DEBUG = os.getenv("ELBA_DEBUG", "0") == "1"
+import logging
+from datetime import datetime, timedelta, date
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel, EmailStr, constr, model_validator, field_validator
@@ -9,16 +10,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
 from passlib.hash import bcrypt
 from jose import jwt, JWTError
-from datetime import datetime, timedelta, date
-import logging
 
-from app.database import SessionLocal
-from app.settings import JWT_SECRET, JWT_EXPIRE_MINUTES
-from app.models import User, Role  # erwartet: Relationship user.roles (optional)
+from app.core.deps import get_db
+from app.core.settings import JWT_SECRET, JWT_EXPIRE_MINUTES
+from app.domains.auth.models import User, Role
 
 logger = logging.getLogger(__name__)
+DEBUG = os.getenv("ELBA_DEBUG", "0") == "1"
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
 
 # ----------------------------
 # Payloads / Responses
@@ -94,14 +95,6 @@ class TokenResponse(BaseModel):
 # ----------------------------
 # DB helpers
 # ----------------------------
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 def _get_or_create_role(db: Session, name: str) -> Role:
     r = db.query(Role).filter(Role.name == name).first()
     if not r:
@@ -139,7 +132,6 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # is_active kann im ORM fehlen → getattr mit Default 1 (=aktiv)
     is_active_val = getattr(user, "is_active", 1)
     try:
         is_active_bool = bool(int(is_active_val))
@@ -166,12 +158,10 @@ def _create_access_token(sub: str, role: str) -> str:
 def register(data: RegisterPayload, db: Session = Depends(get_db)):
     norm_email = data.email.lower().strip()
 
-    # A) E-Mail bereits vorhanden?
     existing = db.query(User).filter(User.email == norm_email).first()
     if existing:
         if not getattr(existing, "is_active", False):
             try:
-                # sichere Strings
                 if hasattr(existing, "display_name") and (data.display_name or "").strip():
                     existing.display_name = (data.display_name or "").strip()
                 if hasattr(existing, "vorname") and (data.vorname or "").strip():
@@ -186,7 +176,6 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
                     existing.password_hash = bcrypt.hash(data.password)
                 db.flush()
 
-                # Kammer/Bezirkskammer upsert – getrennte Tabellen!
                 try:
                     db.execute(text("DELETE FROM user_kammer WHERE user_id = :uid"), {"uid": existing.user_id})
                     db.execute(
@@ -218,7 +207,7 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
                 raise HTTPException(status_code=500, detail="Registrierung momentan nicht möglich.")
         raise HTTPException(status_code=409, detail="E-Mail ist bereits registriert")
 
-    # B) Kammer/Bezirkskammer validieren
+    # Kammer validieren
     try:
         row = db.execute(
             text("SELECT COUNT(*) AS c FROM kammer WHERE kammer_id = :kid"),
@@ -243,17 +232,14 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
     except Exception as e:
         logger.warning("Kammer-Validierung übersprungen: %s", e)
 
-    # C) User anlegen & COMMIT  (RAW-SQL, passend zu deiner Tabelle)
     try:
         display_name = (data.display_name or f"{data.vorname} {data.nachname}").strip()
         vor = (data.vorname or "").strip()
         nach = (data.nachname or "").strip()
 
-        # HARTE Validierung gegen DB-Constraints (deine Tabelle hat NOT NULL für vorname/nachname/display_name)
         if not vor or not nach or not display_name:
             raise HTTPException(status_code=422, detail="Vorname, Nachname und Anzeigename sind erforderlich.")
 
-        # Insert exakt in die vorhandenen Spaltennamen
         db.execute(
             text("""
                 INSERT INTO user
@@ -271,13 +257,9 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
                 "geburtstag": data.geburtstag,
             },
         )
-
-        # Neue ID holen und "user" wieder laden (damit unten Rollen/Zuordnungen funktionieren)
         new_id = db.execute(text("SELECT LAST_INSERT_ID()")).scalar()
         db.commit()
 
-        # Falls dein ORM-Model von Tabellenspalten abweicht, klappt das Laden evtl. nicht
-        # -> wir versuchen es, fallen aber notfalls auf ein Dict-Objekt zurück.
         user = db.query(User).filter(User.user_id == int(new_id)).first()
         if not user:
             class _U: pass
@@ -289,7 +271,6 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
 
     except IntegrityError:
         db.rollback()
-        # echte UNIQUE(email)-Kollision
         raise HTTPException(status_code=409, detail="E-Mail ist bereits registriert")
     except HTTPException:
         db.rollback()
@@ -301,7 +282,6 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
             raise HTTPException(status_code=500, detail=f"DB-Fehler bei der User-Anlage: {repr(e)}")
         raise HTTPException(status_code=500, detail="Registrierung momentan nicht möglich.")
 
-    # D) Rolle & Zuordnungen nachgelagert (soft-fail)
     try:
         role = _get_or_create_role(db, "pruefer")
         try:
@@ -318,12 +298,10 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
         logger.warning("Rollen-Setup fehlgeschlagen: %s", e)
 
     try:
-        # user_kammer: nur (user_id, kammer_id)
         db.execute(
             text("INSERT INTO user_kammer (user_id, kammer_id) VALUES (:uid, :kid)"),
             {"uid": user.user_id, "kid": data.kammer_id},
         )
-        # user_bezirkskammer separat
         if data.bezirkskammer_id is not None:
             db.execute(
                 text("INSERT INTO user_bezirkskammer (user_id, bezirkskammer_id) VALUES (:uid, :bkid)"),
@@ -363,13 +341,10 @@ def login(data: LoginPayload, db: Session = Depends(get_db)):
 @router.get("/me")
 def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        # kammer_id robust ermitteln (ohne Order-by auf unbekannter PK)
         kammer_id = db.execute(
             text("SELECT MIN(kammer_id) FROM user_kammer WHERE user_id = :uid"),
             {"uid": current_user.user_id},
         ).scalar()
-
-        # bezirkskammer_id separat
         bezirkskammer_id = db.execute(
             text("SELECT MIN(bezirkskammer_id) FROM user_bezirkskammer WHERE user_id = :uid"),
             {"uid": current_user.user_id},

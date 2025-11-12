@@ -1,37 +1,31 @@
-# app/routers/schedule.py
-from fastapi import APIRouter, Depends, Query, HTTPException
+# app/domains/exam/router.py
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from datetime import date
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_
-from app.database import SessionLocal
-from app.models_exam import Pruefungstag, Pruefung, Pruefkandidat
-from app.schemas_exam import PruefungstagOut, SlotOut, PruefungDetailOut
 
-router = APIRouter(prefix="/api", tags=["Schedule"])
+from app.core.deps import get_db
+from app.domains.exam.models import Pruefungstag, Pruefung, Pruefkandidat
+from app.domains.exam.schemas import PruefungstagOut, SlotOut, PruefungDetailOut
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+router = APIRouter(prefix="/api/exam", tags=["Exam"])
 
 @router.get("/pruefungstage", response_model=List[PruefungstagOut])
 def list_pruefungstage(
     db: Session = Depends(get_db),
     ausschuss_id: Optional[int] = Query(None),
-    von: Optional[date] = Query(None, description="Startdatum (inkl.)"),
-    bis: Optional[date] = Query(None, description="Enddatum (inkl.)"),
+    von: Optional[date] = Query(None, description="Startdatum inkl."),
+    bis: Optional[date] = Query(None, description="Enddatum inkl."),
     status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
     q = select(Pruefungstag)
     cond = []
-    if ausschuss_id: cond.append(Pruefungstag.ausschuss_id == ausschuss_id)
-    if von: cond.append(Pruefungstag.datum >= von)
-    if bis: cond.append(Pruefungstag.datum <= bis)
+    if ausschuss_id is not None: cond.append(Pruefungstag.ausschuss_id == ausschuss_id)
+    if von:  cond.append(Pruefungstag.datum >= von)
+    if bis:  cond.append(Pruefungstag.datum <= bis)
     if status: cond.append(Pruefungstag.status == status)
     if cond: q = q.where(and_(*cond))
     q = q.order_by(Pruefungstag.datum.asc()).limit(limit).offset(offset)
@@ -41,7 +35,7 @@ def list_pruefungstage(
 def get_pruefungstag(pruefungstag_id: int, db: Session = Depends(get_db)):
     obj = db.get(Pruefungstag, pruefungstag_id)
     if not obj:
-        raise HTTPException(404, "Pruefungstag nicht gefunden")
+        raise HTTPException(404, "Prüfungstag nicht gefunden")
     return obj
 
 @router.get("/pruefungstage/{pruefungstag_id}/pruefungen", response_model=List[SlotOut])
@@ -70,7 +64,7 @@ def get_slot(pruefung_id: int, db: Session = Depends(get_db)):
     q = (
         select(
             Pruefung.pruefung_id,
-            Pruenung.pruefungstag_id,          # typo avoided in final!
+            Pruefung.pruefungstag_id,
             Pruefung.pruefkandidat_id,
             (Pruefkandidat.nachname + ", " + Pruefkandidat.vorname).label("kandidat_name"),
             Pruefung.start_at,
@@ -85,5 +79,5 @@ def get_slot(pruefung_id: int, db: Session = Depends(get_db)):
     )
     row = db.execute(q).first()
     if not row:
-        raise HTTPException(404, "Pruefung/Slot nicht gefunden")
+        raise HTTPException(404, "Prüfung/Slot nicht gefunden")
     return PruefungDetailOut(**dict(row._mapping))
