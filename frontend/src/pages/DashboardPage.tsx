@@ -1,10 +1,11 @@
-import { useAuth } from "@/auth/AuthContext";
+// src/pages/DashboardPage.tsx
+import { useAuth } from "@/context/AuthContext";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
 export default function DashboardPage() {
   const { user, logout } = useAuth();
-  const who = user?.display_name ?? user?.email ?? "";   // << neu
+  const who = user?.display_name ?? user?.email ?? "";
 
   return (
     <div className="p-4 space-y-6">

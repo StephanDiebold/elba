@@ -1,8 +1,8 @@
 // src/App.tsx
 import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "@/auth/AuthContext";
-import ProtectedRoute from "@/auth/ProtectedRoute";
+import { AuthProvider } from "@/context/AuthContext";
+import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import DashboardPage from "@/pages/DashboardPage";
 import LoginPage from "@/pages/LoginPage";
 import RegisterPage from "@/pages/RegisterPage";

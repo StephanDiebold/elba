@@ -2,7 +2,7 @@
 import { Link, NavLink } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { useAuth } from "@/auth/AuthContext";
+import { useAuth } from "@/context/AuthContext";
 
 function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
   return (
