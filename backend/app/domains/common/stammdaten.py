@@ -3,27 +3,20 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.core.deps import get_db
+from app.domains.exam.models import Kammer, Bezirkskammer
 
 router = APIRouter(prefix="/stammdaten", tags=["Stammdaten"])
 
 @router.get("/kammer")
-def list_kammern(db: Session = Depends(get_db)):
-    rows = db.execute(text("""
-        SELECT kammer_id, kammer_name
-        FROM kammer
-        ORDER BY kammer_name
-    """)).mappings().all()
-    return [dict(r) for r in rows]
+def list_kammer(db: Session = Depends(get_db)):
+    return db.query(Kammer).order_by(Kammer.kammer_name).all()
 
 @router.get("/bezirkskammer")
-def list_bezirkskammern(
-    kammer_id: int = Query(..., gt=0),
+def list_bezirkskammer(
     db: Session = Depends(get_db),
+    kammer_id: int | None = Query(None),   # <<< optional!
 ):
-    rows = db.execute(text("""
-        SELECT bezirkskammer_id, kammer_id, bezirkskammer_name
-        FROM bezirkskammer
-        WHERE kammer_id = :kid
-        ORDER BY bezirkskammer_name
-    """), {"kid": kammer_id}).mappings().all()
-    return [dict(r) for r in rows]
+    q = db.query(Bezirkskammer)
+    if kammer_id is not None:
+        q = q.filter(Bezirkskammer.kammer_id == kammer_id)
+    return q.order_by(Bezirkskammer.bezirkskammer_name).all()

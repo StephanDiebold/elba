@@ -32,8 +32,10 @@ export default function AppHeader() {
         {/* Navigation */}
         <nav className="ml-2 flex items-center gap-1">
           <NavItem to="/dashboard">Dashboard</NavItem>
-          <NavItem to="/schlagworte">Schlagwörter</NavItem>
-          <NavItem to="/skillcluster">Skillcluster</NavItem>
+          <NavItem to="/planner">Planer</NavItem>
+          <NavItem to="/candidates">Kandidaten</NavItem>
+          <NavItem to="/committees">Ausschüsse</NavItem>
+          <NavItem to="/exams">Prüfungen</NavItem>
         </nav>
 
         <div className="ml-auto flex items-center gap-2">

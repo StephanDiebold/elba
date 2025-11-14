@@ -1,14 +1,16 @@
-// src/App.tsx
 import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
-import DashboardPage from "@/pages/DashboardPage";
-import LoginPage from "@/pages/LoginPage";
-import RegisterPage from "@/pages/RegisterPage";
 import AppShell from "@/components/layout/AppShell";
 import Footer from "@/components/layout/Footer";
 import { Toaster } from "sonner";
+
+// Pages
+import DashboardPage from "@/pages/DashboardPage";
+import LoginPage from "@/pages/LoginPage";
+import RegisterPage from "@/pages/RegisterPage";
+import PlannerPage from "@/pages/PlannerPage";
 
 export default function App() {
   useEffect(() => {
@@ -17,8 +19,8 @@ export default function App() {
 
   return (
     <AuthProvider>
+      {/* 👇 Basispfad für alle Routen */}
       <BrowserRouter>
-        {/* Globales Layout: Sticky Footer */}
         <div className="min-h-screen flex flex-col">
           <main className="flex-1">
             <Routes>
@@ -26,31 +28,33 @@ export default function App() {
               <Route path="/login" element={<LoginPage />} />
               <Route path="/register" element={<RegisterPage />} />
 
-              {/* Protected + persistente Top-Bar */}
+              {/* Protected */}
               <Route element={<ProtectedRoute />}>
                 <Route element={<AppShell />}>
                   <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/planner" element={<PlannerPage />} />
+                  {/* Alias für alte Links/Navi */}
+                  <Route path="/schedule" element={<PlannerPage />} />
+
+                  {/* Root → Dashboard */}
+                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                  {/* 404 */}
+                  <Route
+                    path="*"
+                    element={
+                      <div className="p-6 text-sm text-muted-foreground">
+                        404 – Seite nicht gefunden.
+                      </div>
+                    }
+                  />
                 </Route>
               </Route>
-
-              {/* Redirects & 404 */}
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route
-                path="*"
-                element={
-                  <div className="p-6 text-sm text-muted-foreground">
-                    404 – Seite nicht gefunden.
-                  </div>
-                }
-              />
             </Routes>
           </main>
 
-          {/* Einmaliger globaler Footer (mit Version aus package.json) */}
           <Footer />
         </div>
 
-        {/* Globaler Toaster */}
         <Toaster position="top-right" richColors closeButton expand />
       </BrowserRouter>
     </AuthProvider>
