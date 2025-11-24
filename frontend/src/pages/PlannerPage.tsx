@@ -9,21 +9,26 @@ export default function PlannerPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  if (!mounted) return <Card className="p-6 text-sm text-muted-foreground">Lade…</Card>;
+  if (!mounted) {
+    return <Card className="p-6 text-sm text-muted-foreground">Lade…</Card>;
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 p-4">
-      <div className="lg:col-span-1">
+    <div className="flex flex-col md:flex-row gap-4 p-4 h-[calc(100vh-4rem)]">
+      {/* Linke Spalte: Prüfungstage-Liste */}
+      <div className="w-full md:max-w-xs md:flex-shrink-0">
         <ErrorBoundary>
           <PlannerList onSelect={setSelectedId} selectedId={selectedId} />
         </ErrorBoundary>
       </div>
-      <div className="lg:col-span-2">
+
+      {/* Rechte Spalte: Detailbereich */}
+      <div className="flex-1 min-w-0">
         <ErrorBoundary>
           {selectedId ? (
             <PlannerDetail pruefungstagId={selectedId} />
           ) : (
-            <Card className="p-6 text-sm text-muted-foreground">
+            <Card className="p-6 text-sm text-muted-foreground h-full flex items-center justify-center text-center">
               Bitte links einen Prüfungstag auswählen oder neu anlegen.
             </Card>
           )}

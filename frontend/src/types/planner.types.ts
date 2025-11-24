@@ -17,11 +17,22 @@ export interface PruefungstagLite {
   status?: StatusPT;
 }
 
+export interface Fachbereich {
+  fachbereich_id: number;
+  fachbereich_name: string;
+}
+
+export interface AusschussLite {
+  ausschuss_id: number;
+  ausschuss_name: string;
+}
+
 export interface AusschussLink {
   pta_id: number;
   ausschuss_id: number;
   ausschuss_name?: string;  // <- wichtig, kommt vom Backend
   max_pruefungen?: number | null;
+  ort?:string | null;
   raum?: string | null;
   aktiv?: boolean;
 }

@@ -17,7 +17,7 @@ from app.domains.exam.schemas import (
     PruefungstagUpdate,
 )
 
-router = APIRouter(prefix="/planner", tags=["Planner"])
+router = APIRouter(tags=["Planner"])
 
 # -------------------------------------------------------------------
 # Helpers
@@ -114,6 +114,7 @@ def list_ausschuesse_for_day(pt_id: int, db: Session = Depends(get_db)):
                 "ausschuss_id": a.ausschuss_id,
                 "ausschuss_name": a.ausschuss_name,
                 "max_pruefungen": link.max_pruefungen,
+                "ort": link.ort,
                 "raum": link.raum,
                 "aktiv": link.aktiv,
             })
@@ -129,16 +130,77 @@ def assign_ausschuss(pt_id: int, payload: dict = Body(...), db: Session = Depend
 
     _get_or_404(db, Ausschuss, ausschuss_id, "Ausschuss nicht gefunden")
 
-    dup = db.query(PruefungstagAusschuss).filter_by(pruefungstag_id=pt_id, ausschuss_id=ausschuss_id).first()
+    dup = db.query(PruefungstagAusschuss).filter_by(
+        pruefungstag_id=pt_id, ausschuss_id=ausschuss_id
+    ).first()
     if dup:
+        # vorhandenen Datensatz aktualisieren
+        dup.ort = payload.get("ort", dup.ort)
+        dup.raum = payload.get("raum", dup.raum)
+        if "max_pruefungen" in payload:
+            dup.max_pruefungen = payload["max_pruefungen"]
+        if "aktiv" in payload:
+            dup.aktiv = bool(payload["aktiv"])
+        db.commit()
+        db.refresh(dup)
         return {"ok": True, "info": "bereits zugeordnet", "pta_id": dup.pta_id}
 
     link = PruefungstagAusschuss(
         pruefungstag_id=pt_id,
         ausschuss_id=ausschuss_id,
+        ort=payload.get("ort"),
+        raum=payload.get("raum"),
+        max_pruefungen=payload.get("max_pruefungen", 9),
+        aktiv=payload.get("aktiv", True),
     )
-    db.add(link); db.commit(); db.refresh(link)
+    db.add(link)
+    db.commit()
+    db.refresh(link)
     return {"ok": True, "pta_id": link.pta_id}
+
+
+# -------------------------------------------------------------------
+# Ausschuss  (Stammdaten)
+# -------------------------------------------------------------------
+
+@router.get("/ausschuesse")
+def list_all_ausschuesse(
+    fachbereich_id: int | None = None,
+    kammer_id: int | None = None,
+    bezirkskammer_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    # Basis-Query auf Ausschuss
+    q = db.query(Ausschuss)
+
+    # nach Fachbereich filtern (direkte Spalte)
+    if fachbereich_id:
+        q = q.filter(Ausschuss.fachbereich_id == fachbereich_id)
+
+    # nach Bezirkskammer filtern (direkte Spalte)
+    if bezirkskammer_id:
+        q = q.filter(Ausschuss.bezirkskammer_id == bezirkskammer_id)
+
+    # nach Kammer filtern (über Join auf Bezirkskammer)
+    if kammer_id:
+        q = (
+            q.join(Bezirkskammer, Ausschuss.bezirkskammer_id == Bezirkskammer.bezirkskammer_id)
+             .filter(Bezirkskammer.kammer_id == kammer_id)
+        )
+
+    rows = q.order_by(Ausschuss.ausschuss_name.asc()).all()
+
+    # WICHTIG: nur Felder zurückgeben, die es wirklich gibt
+    return [
+        {
+            "ausschuss_id": a.ausschuss_id,
+            "ausschuss_name": a.ausschuss_name,
+            "fachbereich_id": a.fachbereich_id,
+            "bezirkskammer_id": a.bezirkskammer_id,
+        }
+        for a in rows
+    ]
+
 
 
 # -------------------------------------------------------------------

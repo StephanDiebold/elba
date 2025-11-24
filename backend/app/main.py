@@ -9,8 +9,10 @@ from app.core.database import engine, Base
 # Router-Imports (bitte exakt diese Pfade nutzen)
 from app.routes.health import router as health_router
 from app.domains.common.stammdaten import router as stammdaten_router
-from app.domains.exam.router import router as exam_router
+from app.domains.common.router import router as common_router
 from app.domains.auth.auth import router as auth_router
+from app.domains.exam.router import router as planner_router
+
 
 app = FastAPI(title="ELBA API", version="0.0.0")
 
@@ -47,8 +49,11 @@ if os.getenv("ENV", "dev") == "dev":
 # Router registrieren
 app.include_router(health_router)
 app.include_router(stammdaten_router)   # /stammdaten/...
-app.include_router(exam_router, prefix="/api/exam")         # /api/exam/...
+app.include_router(common_router)       # /common/...
 app.include_router(auth_router)         # /auth/...
+app.include_router(planner_router, prefix="/planner")
+
+
 
 @app.get("/")
 def root():

@@ -17,6 +17,7 @@ import { Plus, RefreshCcw } from "lucide-react";
 
 type Kammer = { kammer_id: number; kammer_name: string };
 type Bezirkskammer = { bezirkskammer_id: number; bezirkskammer_name: string };
+type Fachbereich = { fachbereich_id: number; fachbereich_name: string };
 
 export default function PlannerList({
   onSelect,
@@ -32,21 +33,39 @@ export default function PlannerList({
   // Felder für Neuanlage
   const [datum, setDatum] = useState(dayjs().format("YYYY-MM-DD"));
   const [ort, setOrt] = useState("IHK Stuttgart");
+
   const [kammern, setKammern] = useState<Kammer[]>([]);
   const [bk, setBk] = useState<Bezirkskammer[]>([]);
   const [kammerId, setKammerId] = useState<number | null>(null);
   const [bezirkskammerId, setBezirkskammerId] = useState<number | null>(null);
 
+  const [fachbereiche, setFachbereiche] = useState<Fachbereich[]>([]);
+  const [fachbereichId, setFachbereichId] = useState<number | null>(null);
+
   const load = async () => {
     setLoading(true);
     try {
-      const [resp, k] = await Promise.all([
+      const [resp, k, fb] = await Promise.all([
         plannerApi.listPruefungstage(),
         plannerApi.listKammern().catch(() => [] as Kammer[]),
+        plannerApi.listFachbereiche().catch(() => [] as Fachbereich[]),
       ]);
+
       setList(resp.items);
       setKammern(k);
-      if (k?.length && kammerId == null) setKammerId(k[0].kammer_id);
+      setFachbereiche(fb);
+
+      if (k?.length && kammerId == null) {
+        setKammerId(k[0].kammer_id);
+      }
+
+      // AEVO als Default, wenn vorhanden – sonst erster Fachbereich
+      if (fb?.length && fachbereichId == null) {
+        const aevo = fb.find((f) =>
+          f.fachbereich_name.toLowerCase().includes("aevo"),
+        );
+        setFachbereichId(aevo?.fachbereich_id ?? fb[0].fachbereich_id);
+      }
     } finally {
       setLoading(false);
     }
@@ -79,6 +98,11 @@ export default function PlannerList({
     };
   }, [kammerId]);
 
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const create = async () => {
     setCreating(true);
     try {
@@ -87,57 +111,76 @@ export default function PlannerList({
         ort,
         kammer_id: kammerId ?? undefined,
         bezirkskammer_id: bezirkskammerId ?? undefined,
-        fachbereich_id: 1,
+        fachbereich_id: fachbereichId ?? undefined,
         status: "geplant",
       });
+
+      const ptId = r.pruefungstag_id;
       await load();
-      onSelect(r.pruefungstag_id);
+      onSelect(ptId);
     } finally {
       setCreating(false);
     }
   };
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const btnDisabled = creating || !datum || !ort;
 
   return (
-    <Card className="h-full">
-      <CardHeader className="flex items-center justify-between">
-        <CardTitle>Prüfungstage</CardTitle>
-        <Button
-          size="icon"
-          variant="ghost"
-          onClick={load}
-          disabled={loading || creating}
-          title="Neu laden"
-        >
-          <RefreshCcw className="w-4 h-4" />
-        </Button>
+    <Card className="h-full flex flex-col">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base md:text-lg">
+            Prüfungstage
+          </CardTitle>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={load}
+            disabled={loading || creating}
+            title="Neu laden"
+            className="shrink-0"
+          >
+            <RefreshCcw className="w-4 h-4" />
+          </Button>
+        </div>
       </CardHeader>
 
-      <CardContent className="space-y-3">
+      <CardContent className="pt-0 flex-1 flex flex-col gap-3 min-h-0">
         {/* Neuanlage */}
-        <div className="grid grid-cols-1 gap-2">
-          <div className="flex gap-2">
+        <div className="space-y-2 border rounded-md p-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <Input
               type="date"
               value={datum}
               onChange={(e) => setDatum(e.target.value)}
-              className="w-[160px]"
             />
             <Input
               value={ort}
               onChange={(e) => setOrt(e.target.value)}
               placeholder="Ort"
-              className="flex-1 min-w-[160px]"
             />
           </div>
 
-          <div className="flex gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <Select
+              value={fachbereichId?.toString() ?? ""}
+              onValueChange={(v) => setFachbereichId(Number(v))}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Fachbereich wählen" />
+              </SelectTrigger>
+              <SelectContent>
+                {fachbereiche.map((fb) => (
+                  <SelectItem
+                    key={fb.fachbereich_id}
+                    value={String(fb.fachbereich_id)}
+                  >
+                    {fb.fachbereich_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
             <Select
               value={kammerId?.toString() ?? ""}
               onValueChange={(v) => setKammerId(Number(v))}
@@ -153,41 +196,49 @@ export default function PlannerList({
                 ))}
               </SelectContent>
             </Select>
+          </div>
 
-            <Select
-              value={bezirkskammerId?.toString() ?? ""}
-              onValueChange={(v) => setBezirkskammerId(Number(v))}
-              disabled={!bk.length}
+          <div className="flex flex-wrap gap-2">
+            <div className="flex-1 min-w-[180px]">
+              <Select
+                value={bezirkskammerId?.toString() ?? ""}
+                onValueChange={(v) => setBezirkskammerId(Number(v))}
+                disabled={!bk.length}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Bezirkskammer wählen" />
+                </SelectTrigger>
+                <SelectContent>
+                  {bk.map((b) => (
+                    <SelectItem
+                      key={b.bezirkskammer_id}
+                      value={String(b.bezirkskammer_id)}
+                    >
+                      {b.bezirkskammer_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button
+              onClick={create}
+              disabled={btnDisabled}
+              className="w-full sm:w-auto sm:flex-none"
             >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Bezirkskammer wählen" />
-              </SelectTrigger>
-              <SelectContent>
-                {bk.map((b) => (
-                  <SelectItem
-                    key={b.bezirkskammer_id}
-                    value={String(b.bezirkskammer_id)}
-                  >
-                    {b.bezirkskammer_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Button onClick={create} disabled={btnDisabled} className="shrink-0">
               <Plus className="mr-2 w-4 h-4" />
               Neu
             </Button>
           </div>
         </div>
 
-        {/* Liste */}
-        <div className="border rounded-lg divide-y">
+        {/* Liste der Prüfungstage */}
+        <div className="border rounded-lg divide-y flex-1 overflow-y-auto">
           {list.map((x) => (
             <button
               key={x.pruefungstag_id}
               className={[
-                "w-full text-left p-3 hover:bg-muted",
+                "w-full text-left px-3 py-2 hover:bg-muted text-sm",
                 selectedId === x.pruefungstag_id ? "bg-muted" : "",
               ].join(" ")}
               onClick={() => onSelect(x.pruefungstag_id)}
@@ -195,7 +246,7 @@ export default function PlannerList({
               <div className="font-medium">
                 {dayjs(x.datum).format("DD.MM.YYYY")}
               </div>
-              <div className="text-sm text-muted-foreground">{x.ort}</div>
+              <div className="text-xs text-muted-foreground">{x.ort}</div>
             </button>
           ))}
           {!list.length && !loading && (

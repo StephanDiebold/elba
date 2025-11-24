@@ -157,6 +157,7 @@ class PruefungstagAusschuss(Base):
     ausschuss_id = Column(Integer, ForeignKey("ausschuss.ausschuss_id"), nullable=False, index=True)
 
     raum = Column(String(100), nullable=True)
+    ort = Column(String(200), nullable=True)
     pruefungskoordinator_id = Column(Integer, ForeignKey("user.user_id"), nullable=True)
     max_pruefungen = Column(Integer, nullable=False, server_default="9")
     bemerkung = Column(Text, nullable=True)
