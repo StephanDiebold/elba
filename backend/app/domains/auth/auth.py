@@ -92,6 +92,11 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class ProfileUpdatePayload(BaseModel):
+    display_name: constr(strip_whitespace=True, min_length=1) | None = None
+    mobilnummer: str | None = None
+    geburtstag: date | None = None
+
 # ----------------------------
 # DB helpers
 # ----------------------------
@@ -164,14 +169,14 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
             try:
                 if hasattr(existing, "display_name") and (data.display_name or "").strip():
                     existing.display_name = (data.display_name or "").strip()
-                if hasattr(existing, "vorname") and (data.vorname or "").strip():
-                    existing.vorname = (data.vorname or "").strip()
-                if hasattr(existing, "nachname") and (data.nachname or "").strip():
-                    existing.nachname = (data.nachname or "").strip()
-                if hasattr(existing, "mobilnummer"):
-                    existing.mobilnummer = data.mobilnummer
-                if hasattr(existing, "geburtstag"):
-                    existing.geburtstag = data.geburtstag
+                if hasattr(existing, "first_name") and (data.vorname or "").strip():
+                    existing.first_name = (data.vorname or "").strip()
+                if hasattr(existing, "last_name") and (data.nachname or "").strip():
+                    existing.last_name = (data.nachname or "").strip()
+                if hasattr(existing, "mobile_number"):
+                    existing.mobile_number = data.mobilnummer
+                if hasattr(existing, "birthday"):
+                    existing.birthday = data.geburtstag
                 if hasattr(existing, "password_hash"):
                     existing.password_hash = bcrypt.hash(data.password)
                 db.flush()
@@ -243,20 +248,21 @@ def register(data: RegisterPayload, db: Session = Depends(get_db)):
         db.execute(
             text("""
                 INSERT INTO user
-                    (email, password_hash, display_name, vorname, nachname, mobilnummer, geburtstag, is_active, must_change_pw)
+                    (email, password_hash, display_name, first_name, last_name, mobile_number, birthday, is_active, must_change_password)
                 VALUES
-                    (:email, :pw, :display_name, :vorname, :nachname, :mobilnummer, :geburtstag, 0, 0)
+                    (:email, :pw, :display_name, :first_name, :last_name, :mobile_number, :birthday, 0, 0)
             """),
             {
                 "email": norm_email,
                 "pw": bcrypt.hash(data.password),
                 "display_name": display_name,
-                "vorname": vor,
-                "nachname": nach,
-                "mobilnummer": data.mobilnummer,
-                "geburtstag": data.geburtstag,
+                "first_name": vor,
+                "last_name": nach,
+                "mobile_number": data.mobilnummer,
+                "birthday": data.geburtstag,
             },
         )
+
         new_id = db.execute(text("SELECT LAST_INSERT_ID()")).scalar()
         db.commit()
 
@@ -356,18 +362,92 @@ def me(current_user: User = Depends(get_current_user), db: Session = Depends(get
                 "user_id": getattr(current_user, "user_id", None),
                 "email": getattr(current_user, "email", None),
                 "display_name": getattr(current_user, "display_name", None),
-                "vorname": getattr(current_user, "vorname", None),
-                "nachname": getattr(current_user, "nachname", None),
-                "mobilnummer": getattr(current_user, "mobilnummer", None),
-                "geburtstag": getattr(current_user, "geburtstag", None),
-                "roles": [r.name for r in getattr(current_user, "roles", [])]
-                         if getattr(current_user, "roles", None) else [],
+
+                # ✅ englische Namen
+                "first_name": getattr(current_user, "first_name", None),
+                "last_name": getattr(current_user, "last_name", None),
+                "mobile_number": getattr(current_user, "mobile_number", None),
+                "birthday": getattr(current_user, "birthday", None),
+
+                # ✅ deutsche Aliase für evtl. bestehenden Frontend-Code
+                "vorname": getattr(current_user, "first_name", None),
+                "nachname": getattr(current_user, "last_name", None),
+                "mobilnummer": getattr(current_user, "mobile_number", None),
+                "geburtstag": getattr(current_user, "birthday", None),
+
+                "roles": [
+                    r.name for r in getattr(current_user, "roles", [])
+                ] if getattr(current_user, "roles", None) else [],
                 "kammer_id": kammer_id,
                 "bezirkskammer_id": bezirkskammer_id,
             }
         }
+
     except Exception as e:
         logger.exception("/auth/me failed: %s", e)
         if DEBUG:
             raise HTTPException(status_code=500, detail=f"/auth/me error: {repr(e)}")
         raise HTTPException(status_code=500, detail="Profil konnte nicht geladen werden.")
+
+@router.patch("/me")
+def update_me(
+    data: ProfileUpdatePayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        # vorbereiten der UPDATE-Teile dynamisch, nur übergebene Felder setzen
+        fields = []
+        params: dict[str, object] = {"uid": current_user.user_id}
+
+        if data.display_name is not None:
+            fields.append("display_name = :display_name")
+            params["display_name"] = data.display_name.strip()
+
+        if data.mobilnummer is not None:
+            fields.append("mobile_number = :mobilnummer")
+            params["mobilnummer"] = data.mobilnummer.strip() or None
+
+        if data.geburtstag is not None:
+            fields.append("birthday = :geburtstag")
+            params["geburtstag"] = data.geburtstag
+
+        if not fields:
+            # nichts zu tun
+            return {"updated": False}
+
+        sql = "UPDATE user SET " + ", ".join(fields) + " WHERE user_id = :uid"
+        db.execute(text(sql), params)
+        db.commit()
+
+        # frisch laden und dieselbe Struktur liefern wie /auth/me
+        row = db.execute(
+            text(
+                """
+                SELECT email, display_name, mobile_number, birthday
+                FROM user
+                WHERE user_id = :uid
+                """
+            ),
+            {"uid": current_user.user_id},
+        ).first()
+
+        # ggf. /auth/me-Struktur wiederverwenden
+        return {
+            "user": {
+                "user_id": current_user.user_id,
+                "email": row.email if row else current_user.email,
+                "display_name": row.display_name if row else getattr(current_user, "display_name", None),
+                "mobilnummer": row.mobile_number if row else getattr(current_user, "mobilnummer", None),
+                "geburtstag": row.birthday if row else getattr(current_user, "geburtstag", None),
+                "roles": [r.name for r in getattr(current_user, "roles", [])]
+                if getattr(current_user, "roles", None) else [],
+            },
+            "updated": True,
+        }
+    except Exception as e:
+        logger.exception("update_me failed: %s", e)
+        if DEBUG:
+            raise HTTPException(status_code=500, detail=f"/auth/me PATCH error: {repr(e)}")
+        raise HTTPException(status_code=500, detail="Profil konnte nicht aktualisiert werden.")
+# Ende der Datei app/domains/auth/auth.py

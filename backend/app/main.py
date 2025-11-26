@@ -13,6 +13,10 @@ from app.domains.common.router import router as common_router
 from app.domains.auth.auth import router as auth_router
 from app.domains.exam.router import router as planner_router
 
+from app.domains.admin.router_org_units import router as admin_org_units_router
+from app.domains.admin.router_committees import router as admin_committees_router
+
+
 
 app = FastAPI(title="ELBA API", version="0.0.0")
 
@@ -52,6 +56,8 @@ app.include_router(stammdaten_router)   # /stammdaten/...
 app.include_router(common_router)       # /common/...
 app.include_router(auth_router)         # /auth/...
 app.include_router(planner_router, prefix="/planner")
+app.include_router(admin_org_units_router)  # /admin/...
+app.include_router(admin_committees_router)  # /admin/...
 
 
 

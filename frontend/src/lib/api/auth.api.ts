@@ -67,3 +67,20 @@ export async function fetchMe(token?: string): Promise<any | null> {
     return null;
   }
 }
+
+export type ProfileUpdatePayload = {
+  display_name?: string | null;
+  mobilnummer?: string | null;
+  geburtstag?: string | null; // "YYYY-MM-DD"
+};
+
+export async function updateProfile(
+  payload: ProfileUpdatePayload
+): Promise<any> {
+  return req<any>("/auth/me", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+// Ende der Datei src/lib/api/auth.api.ts

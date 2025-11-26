@@ -11,6 +11,14 @@ import DashboardPage from "@/pages/DashboardPage";
 import LoginPage from "@/pages/LoginPage";
 import RegisterPage from "@/pages/RegisterPage";
 import PlannerPage from "@/pages/PlannerPage";
+import OrgUnitsPage from "@/pages/admin/OrgUnitsPage";
+import AccountPage from "./pages/AccountPage";
+import CommitteeMembersPage from "./pages/admin/CommitteeMembersPage";
+
+import CommitteesAdminPage from "@/pages/admin/CommitteesAdminPage";
+import UsersAdminPage from "@/pages/admin/UsersAdminPage";
+import RolesAdminPage from "@/pages/admin/RolesAdminPage";
+
 
 export default function App() {
   useEffect(() => {
@@ -36,8 +44,22 @@ export default function App() {
                   {/* Alias für alte Links/Navi */}
                   <Route path="/schedule" element={<PlannerPage />} />
 
+                  {/* Admin-Bereich */}
+                  <Route path="/admin/org-units" element={<OrgUnitsPage />} />
+                  <Route path="/admin/committees" element={<CommitteesAdminPage />} />
+                  <Route path="/admin/committees/:committeeId/members" element={<CommitteeMembersPage />} />
+                  <Route path="/admin/users" element={<UsersAdminPage />} />
+                  <Route path="/admin/roles" element={<RolesAdminPage />} />
+
+                  {/* Account */}
+                  <Route path="/account" element={<AccountPage />} />
+                  
                   {/* Root → Dashboard */}
-                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                  <Route
+                    path="/"
+                    element={<Navigate to="/dashboard" replace />}
+                  />
+
                   {/* 404 */}
                   <Route
                     path="*"
