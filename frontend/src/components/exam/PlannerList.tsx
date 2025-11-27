@@ -1,261 +1,337 @@
 // src/components/exam/PlannerList.tsx
+
 import { useEffect, useState } from "react";
-import dayjs from "dayjs";
-import plannerApi from "@/lib/api/planner.api";
-import type { PruefungstagLite } from "@/types/planner.types";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { useNavigate } from "react-router-dom";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Plus, RefreshCcw } from "lucide-react";
+  listExamDays,
+  createExamDay,
+  type ExamDay,
+  type ExamDayCreate,
+} from "@/lib/api/planner.api";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
-type Kammer = { kammer_id: number; kammer_name: string };
-type Bezirkskammer = { bezirkskammer_id: number; bezirkskammer_name: string };
-type Fachbereich = { fachbereich_id: number; fachbereich_name: string };
+export default function PlannerList() {
+  const [examDays, setExamDays] = useState<ExamDay[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-export default function PlannerList({
-  onSelect,
-  selectedId,
-}: {
-  onSelect: (id: number) => void;
-  selectedId: number | null;
-}) {
-  const [list, setList] = useState<PruefungstagLite[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
-  // Felder für Neuanlage
-  const [datum, setDatum] = useState(dayjs().format("YYYY-MM-DD"));
-  const [ort, setOrt] = useState("IHK Stuttgart");
+  const [form, setForm] = useState<{
+    date: string;
+    org_unit_id: string;
+    subject_id: string;
+    time_scheme_id: string;
+    location: string;
+    default_room: string;
+  }>({
+    date: "",
+    org_unit_id: "",
+    subject_id: "",
+    time_scheme_id: "",
+    location: "",
+    default_room: "",
+  });
 
-  const [kammern, setKammern] = useState<Kammer[]>([]);
-  const [bk, setBk] = useState<Bezirkskammer[]>([]);
-  const [kammerId, setKammerId] = useState<number | null>(null);
-  const [bezirkskammerId, setBezirkskammerId] = useState<number | null>(null);
+  const navigate = useNavigate();
 
-  const [fachbereiche, setFachbereiche] = useState<Fachbereich[]>([]);
-  const [fachbereichId, setFachbereichId] = useState<number | null>(null);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [resp, k, fb] = await Promise.all([
-        plannerApi.listPruefungstage(),
-        plannerApi.listKammern().catch(() => [] as Kammer[]),
-        plannerApi.listFachbereiche().catch(() => [] as Fachbereich[]),
-      ]);
-
-      setList(resp.items);
-      setKammern(k);
-      setFachbereiche(fb);
-
-      if (k?.length && kammerId == null) {
-        setKammerId(k[0].kammer_id);
-      }
-
-      // AEVO als Default, wenn vorhanden – sonst erster Fachbereich
-      if (fb?.length && fachbereichId == null) {
-        const aevo = fb.find((f) =>
-          f.fachbereich_name.toLowerCase().includes("aevo"),
-        );
-        setFachbereichId(aevo?.fachbereich_id ?? fb[0].fachbereich_id);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // BKs nachladen sobald Kammer gewählt
+  // --- Liste laden ---
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      if (!kammerId) {
-        setBk([]);
-        setBezirkskammerId(null);
-        return;
-      }
+
+    async function load() {
       try {
-        const rows = await plannerApi.listBezirkskammern(kammerId);
+        setLoading(true);
+        setError(null);
+        const data = await listExamDays();
         if (!cancelled) {
-          setBk(rows);
-          setBezirkskammerId(rows[0]?.bezirkskammer_id ?? null);
+          setExamDays(data);
         }
-      } catch {
+      } catch (err) {
+        console.error("Fehler beim Laden der Prüfungstage:", err);
         if (!cancelled) {
-          setBk([]);
-          setBezirkskammerId(null);
+          setError("Die Prüfungstage konnten nicht geladen werden.");
         }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    })();
+    }
+
+    load();
     return () => {
       cancelled = true;
     };
-  }, [kammerId]);
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const create = async () => {
-    setCreating(true);
-    try {
-      const r = await plannerApi.createPruefungstag({
-        datum,
-        ort,
-        kammer_id: kammerId ?? undefined,
-        bezirkskammer_id: bezirkskammerId ?? undefined,
-        fachbereich_id: fachbereichId ?? undefined,
-        status: "geplant",
-      });
+  // --- Formular-Handler ---
+  const handleChange =
+    (field: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setForm((prev) => ({
+        ...prev,
+        [field]: e.target.value,
+      }));
+    };
 
-      const ptId = r.pruefungstag_id;
-      await load();
-      onSelect(ptId);
+  const handleCreate = async () => {
+    setCreateError(null);
+
+    const missing: string[] = [];
+    if (!form.date) missing.push("Datum");
+    if (!form.org_unit_id) missing.push("OrgUnit-ID");
+    if (!form.subject_id) missing.push("Fach-ID");
+    if (!form.time_scheme_id) missing.push("Zeitschema-ID");
+
+    if (missing.length) {
+      setCreateError(
+        "Bitte folgende Felder ausfüllen: " + missing.join(", ")
+      );
+      return;
+    }
+
+    const payload: ExamDayCreate = {
+      date: form.date,
+      org_unit_id: Number(form.org_unit_id),
+      subject_id: Number(form.subject_id),
+      time_scheme_id: Number(form.time_scheme_id),
+      location: form.location || null,
+      default_room: form.default_room || null,
+      status: "planned",
+      is_active: true,
+    };
+
+    try {
+      setCreating(true);
+      const created = await createExamDay(payload);
+
+      // Liste aktualisieren (sortiert nach Datum)
+      setExamDays((prev) =>
+        [...prev, created].sort((a, b) =>
+          a.date === b.date
+            ? a.exam_day_id - b.exam_day_id
+            : a.date.localeCompare(b.date)
+        )
+      );
+
+      // Dialog schließen und Formular zurücksetzen
+      setForm({
+        date: "",
+        org_unit_id: "",
+        subject_id: "",
+        time_scheme_id: "",
+        location: "",
+        default_room: "",
+      });
+      setCreateOpen(false);
+    } catch (err) {
+      console.error("Fehler beim Anlegen eines Prüfungstags:", err);
+      setCreateError("Der Prüfungstag konnte nicht angelegt werden.");
     } finally {
       setCreating(false);
     }
   };
 
-  const btnDisabled = creating || !datum || !ort;
-
   return (
-    <Card className="h-full flex flex-col">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-base md:text-lg">
-            Prüfungstage
-          </CardTitle>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={load}
-            disabled={loading || creating}
-            title="Neu laden"
-            className="shrink-0"
-          >
-            <RefreshCcw className="w-4 h-4" />
-          </Button>
-        </div>
-      </CardHeader>
-
-      <CardContent className="pt-0 flex-1 flex flex-col gap-3 min-h-0">
-        {/* Neuanlage */}
-        <div className="space-y-2 border rounded-md p-2">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <Input
-              type="date"
-              value={datum}
-              onChange={(e) => setDatum(e.target.value)}
-            />
-            <Input
-              value={ort}
-              onChange={(e) => setOrt(e.target.value)}
-              placeholder="Ort"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <Select
-              value={fachbereichId?.toString() ?? ""}
-              onValueChange={(v) => setFachbereichId(Number(v))}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Fachbereich wählen" />
-              </SelectTrigger>
-              <SelectContent>
-                {fachbereiche.map((fb) => (
-                  <SelectItem
-                    key={fb.fachbereich_id}
-                    value={String(fb.fachbereich_id)}
-                  >
-                    {fb.fachbereich_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select
-              value={kammerId?.toString() ?? ""}
-              onValueChange={(v) => setKammerId(Number(v))}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Kammer wählen" />
-              </SelectTrigger>
-              <SelectContent>
-                {kammern.map((k) => (
-                  <SelectItem key={k.kammer_id} value={String(k.kammer_id)}>
-                    {k.kammer_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <div className="flex-1 min-w-[180px]">
-              <Select
-                value={bezirkskammerId?.toString() ?? ""}
-                onValueChange={(v) => setBezirkskammerId(Number(v))}
-                disabled={!bk.length}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Bezirkskammer wählen" />
-                </SelectTrigger>
-                <SelectContent>
-                  {bk.map((b) => (
-                    <SelectItem
-                      key={b.bezirkskammer_id}
-                      value={String(b.bezirkskammer_id)}
-                    >
-                      {b.bezirkskammer_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <Button
-              onClick={create}
-              disabled={btnDisabled}
-              className="w-full sm:w-auto sm:flex-none"
-            >
-              <Plus className="mr-2 w-4 h-4" />
-              Neu
-            </Button>
-          </div>
+    <div className="mx-auto max-w-7xl px-4 py-6">
+      {/* Kopfbereich */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-xs text-muted-foreground uppercase tracking-wide">
+            Planung
+          </p>
+          <h1 className="text-xl font-semibold">Prüfungstage</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Übersicht aller angelegten Prüfungstage. Hier kannst du
+            Ausschüsse, Slots und Prüfungen pro Tag planen.
+          </p>
         </div>
 
-        {/* Liste der Prüfungstage */}
-        <div className="border rounded-lg divide-y flex-1 overflow-y-auto">
-          {list.map((x) => (
-            <button
-              key={x.pruefungstag_id}
-              className={[
-                "w-full text-left px-3 py-2 hover:bg-muted text-sm",
-                selectedId === x.pruefungstag_id ? "bg-muted" : "",
-              ].join(" ")}
-              onClick={() => onSelect(x.pruefungstag_id)}
-            >
-              <div className="font-medium">
-                {dayjs(x.datum).format("DD.MM.YYYY")}
+        {/* Button – Neuer Prüfungstag (Dialog) */}
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <DialogTrigger asChild>
+            <Button size="sm">+ Neuer Prüfungstag</Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Neuen Prüfungstag anlegen</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-3 py-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="date">Datum</Label>
+                  <Input
+                    id="date"
+                    type="date"
+                    value={form.date}
+                    onChange={handleChange("date")}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="org_unit_id">OrgUnit-ID</Label>
+                  <Input
+                    id="org_unit_id"
+                    type="number"
+                    value={form.org_unit_id}
+                    onChange={handleChange("org_unit_id")}
+                    placeholder="z. B. 1"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="subject_id">Fach-ID (subject_id)</Label>
+                  <Input
+                    id="subject_id"
+                    type="number"
+                    value={form.subject_id}
+                    onChange={handleChange("subject_id")}
+                    placeholder="z. B. 1"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="time_scheme_id">Zeitschema-ID</Label>
+                  <Input
+                    id="time_scheme_id"
+                    type="number"
+                    value={form.time_scheme_id}
+                    onChange={handleChange("time_scheme_id")}
+                    placeholder="z. B. 1"
+                  />
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground">{x.ort}</div>
-            </button>
-          ))}
-          {!list.length && !loading && (
-            <div className="p-3 text-sm text-muted-foreground">
-              Keine Prüfungstage vorhanden.
+
+              <div className="space-y-1">
+                <Label htmlFor="location">Ort</Label>
+                <Input
+                  id="location"
+                  value={form.location}
+                  onChange={handleChange("location")}
+                  placeholder="z. B. IHK Stuttgart"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="default_room">Standardraum</Label>
+                <Input
+                  id="default_room"
+                  value={form.default_room}
+                  onChange={handleChange("default_room")}
+                  placeholder="z. B. Raum 101"
+                />
+              </div>
+
+              {createError && (
+                <p className="text-sm text-red-600">{createError}</p>
+              )}
             </div>
-          )}
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCreateOpen(false)}
+                disabled={creating}
+              >
+                Abbrechen
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleCreate}
+                disabled={creating}
+              >
+                {creating ? "Speichern …" : "Speichern"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      {/* Inhalt */}
+      {loading && (
+        <div className="text-sm text-muted-foreground">
+          Prüfungstage werden geladen …
         </div>
-      </CardContent>
-    </Card>
+      )}
+
+      {error && (
+        <div className="text-sm text-red-600 mb-3">{error}</div>
+      )}
+
+      {!loading && !error && examDays.length === 0 && (
+        <div className="text-sm text-muted-foreground">
+          Es sind noch keine Prüfungstage angelegt.
+        </div>
+      )}
+
+      {!loading && !error && examDays.length > 0 && (
+        <div className="border rounded-md overflow-hidden bg-white">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/60">
+              <tr className="text-left">
+                <th className="px-3 py-2 border-b">ID</th>
+                <th className="px-3 py-2 border-b">Datum</th>
+                <th className="px-3 py-2 border-b">Ort</th>
+                <th className="px-3 py-2 border-b">Standardraum</th>
+                <th className="px-3 py-2 border-b">OrgUnit-ID</th>
+                <th className="px-3 py-2 border-b">Fach-ID</th>
+                <th className="px-3 py-2 border-b">Status</th>
+                <th className="px-3 py-2 border-b text-right">Aktionen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {examDays.map((day) => (
+                <tr key={day.exam_day_id} className="hover:bg-muted/40">
+                  <td className="px-3 py-2 border-b">{day.exam_day_id}</td>
+                  <td className="px-3 py-2 border-b">{day.date}</td>
+                  <td className="px-3 py-2 border-b">
+                    {day.location || (
+                      <span className="text-muted-foreground">–</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 border-b">
+                    {day.default_room || (
+                      <span className="text-muted-foreground">–</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 border-b">{day.org_unit_id}</td>
+                  <td className="px-3 py-2 border-b">{day.subject_id}</td>
+                  <td className="px-3 py-2 border-b">
+                    <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs">
+                      {day.status}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 border-b text-right">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        navigate(`/pruefungstage/${day.exam_day_id}`)
+                      }
+                    >
+                      Details
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
+// End of src/components/exam/PlannerList.tsx

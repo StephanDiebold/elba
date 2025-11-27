@@ -1,228 +1,199 @@
 // src/lib/api/planner.api.ts
-import { getJson, postJson, putJson, del } from "./core";
-import type { PruefungstagLite, Zeitschema, Slot } from "@/types/planner.types";
 
-const PREFIX = "/planner";
+import { http } from "@/lib/httpClient";
 
-/* ====================== Stammdaten ====================== */
-export interface Kammer {
-  kammer_id: number;
-  kammer_name: string;
+export type ExamDayStatus = "planned" | "in_progress" | "done" | "canceled";
+export type SlotStatus = "free" | "reserved" | "booked" | "blocked";
+
+export type ExamType = "aevo" | "wfw" | "it" | "custom";
+export type ExamStatus = "planned" | "in_progress" | "done" | "canceled" | "no_show";
+
+export interface ExamDay {
+  exam_day_id: number;
+  org_unit_id: number;
+  subject_id: number;
+  time_scheme_id: number;
+  date: string; // ISO-String vom Backend
+  location: string | null;
+  default_room: string | null;
+  status: ExamDayStatus;
+  is_active: boolean;
 }
 
-export interface Bezirkskammer {
-  bezirkskammer_id: number;
-  kammer_id: number;
-  bezirkskammer_name: string;
+export interface ExamDayQueryParams {
+  org_unit_id?: number;
+  subject_id?: number;
+  from?: string; // "YYYY-MM-DD"
+  to?: string;   // "YYYY-MM-DD"
+  status?: ExamDayStatus;
 }
 
-export async function listKammern() {
-  return await getJson<Kammer[]>(`/stammdaten/kammer`);
+export interface ExamSlot {
+  exam_slot_id: number;
+  exam_day_id: number;
+  committee_id: number;
+  slot_index: number;
+  start_time: string;
+  end_time: string;
+  status: SlotStatus;
+  exam_id?: number | null;
+  candidate_id?: number | null;
+  candidate_first_name?: string | null;
+  candidate_last_name?: string | null;
 }
 
-export async function listBezirkskammern(kammer_id?: number) {
-  const qs = kammer_id ? `?kammer_id=${kammer_id}` : "";
-  return await getJson<Bezirkskammer[]>(`/stammdaten/bezirkskammer${qs}`);
+export interface Exam {
+  exam_id: number;
+  candidate_id: number;
+  exam_day_id: number;
+  exam_slot_id: number;
+  committee_id: number;
+  exam_type: ExamType;
+  status: ExamStatus;
 }
 
-/* ===== Fachbereiche & Ausschüsse ===== */
-
-export interface Fachbereich {
-  fachbereich_id: number;
-  fachbereich_name: string;
+export interface ExamCreate {
+  candidate_id: number;
+  exam_day_id: number;
+  exam_slot_id: number;
+  exam_type?: ExamType;
 }
 
-export async function listFachbereiche() {
-  return await getJson<Fachbereich[]>(`/stammdaten/fachbereiche`);
+// --- Exams ---
+
+export async function createExam(payload: ExamCreate): Promise<Exam> {
+  const res = await http.post<Exam>("/planner/exams", payload);
+  return res.data;
 }
 
-export interface AusschussLite {
-  ausschuss_id: number;
-  ausschuss_name: string;
+export async function deleteExam(examId: number): Promise<void> {
+  await http.delete(`/planner/exams/${examId}`);
 }
 
-/* ====================== Planner ====================== */
-
-export interface PruefungstagListResp {
-  items: PruefungstagLite[];
-  total: number;
-  page?: number;
-  size?: number;
+export async function updateExam(
+  examId: number,
+  payload: ExamCreate
+): Promise<Exam> {
+  const res = await http.patch<Exam>(`/planner/exams/${examId}`, payload);
+  return res.data;
 }
 
-export interface PTAItem {
-  pta_id: number;
-  pruefungstag_id: number;
-  ausschuss_id: number;
-  raum?: string | null;
-  max_pruefungen: number;
-  bemerkung?: string | null;
-  // vom Backend kommen zusätzlich z.B. ausschuss_name, aktiv – die
-  // kannst du bei Bedarf hier ergänzen
+// --- Exam Days ---
+
+export async function listExamDays(
+  params: ExamDayQueryParams = {}
+): Promise<ExamDay[]> {
+  const res = await http.get<ExamDay[]>("/planner/exam-days", { params });
+  return res.data;
 }
 
-const plannerApi = {
-  // --- Prüfungstage ---
-  listPruefungstage: async (params?: {
-    page?: number;
-    size?: number;
-    von?: string;
-    bis?: string;
-  }) => {
-    const qs = new URLSearchParams();
-    if (params?.page) qs.set("page", String(params.page));
-    if (params?.size) qs.set("size", String(params.size));
-    if (params?.von) qs.set("von", params.von);
-    if (params?.bis) qs.set("bis", params.bis);
+export async function getExamDay(id: number): Promise<ExamDay> {
+  const res = await http.get<ExamDay>(`/planner/exam-days/${id}`);
+  return res.data;
+}
 
-    const url = `${PREFIX}/pruefungstage${
-      qs.toString() ? `?${qs.toString()}` : ""
-    }`;
+export interface ExamDayCreate {
+  org_unit_id: number;
+  subject_id: number;
+  time_scheme_id: number;
+  date: string; // "YYYY-MM-DD"
+  location?: string | null;
+  default_room?: string | null;
+  status?: ExamDayStatus;
+  is_active?: boolean;
+}
 
-    const raw = await getJson<any>(url);
-    const items: PruefungstagLite[] = Array.isArray(raw)
-      ? raw
-      : raw?.items ?? [];
-    const total = Array.isArray(raw) ? items.length : raw?.total ?? items.length;
-    const page = Array.isArray(raw) ? 1 : raw?.page;
-    const size = Array.isArray(raw) ? items.length : raw?.size;
+export async function createExamDay(
+  payload: ExamDayCreate
+): Promise<ExamDay> {
+  const res = await http.post<ExamDay>("/planner/exam-days", payload);
+  return res.data;
+}
 
-    const resp: PruefungstagListResp = { items, total, page, size };
-    return resp;
-  },
+// --- Committees am Prüfungstag ---
 
-  createPruefungstag: async (dto: {
-    datum: string;
-    ort: string;
-    kammer_id?: number;
-    bezirkskammer_id?: number;
-    fachbereich_id?: number;
-    status?:
-      | "geplant"
-      | "laufend"
-      | "pausiert"
-      | "abgeschlossen"
-      | "archiviert";
-    raum_default?: string;
-    bemerkung?: string;
-  }) =>
-    postJson<{ pruefungstag_id: number }>(`${PREFIX}/pruefungstage`, dto),
+export interface ExamDayCommittee {
+  exam_day_committee_id: number;
+  exam_day_id: number;
+  committee_id: number;
+  room: string | null;
+  location: string | null;
+  time_scheme_id: number | null;
+}
 
-  getPruefungstag: async (pt_id: number) => {
-    type Detail = {
-      pruefungstag_id: number;
-      datum: string;
-      ort: string;
-      status: string;
-      kammer_id?: number;
-      bezirkskammer_id?: number;
-      fachbereich_id?: number;
-      raum_default?: string | null;
-      bemerkung?: string | null;
-      ausschuesse: PTAItem[];
-      slots: Slot[];
-    };
-    return await getJson<Detail>(`${PREFIX}/pruefungstage/${pt_id}`);
-  },
+export interface ExamDayCommitteeCreate {
+  committee_id: number;
+  room?: string | null;
+  location?: string | null;
+  time_scheme_id: number;
+}
 
-  updatePruefungstag: async (pt_id: number, dto: UpdatePruefungstagDto) =>
-    putJson<{ ok: boolean }>(`${PREFIX}/pruefungstage/${pt_id}`, dto),
+export async function listExamDayCommittees(
+  examDayId: number
+): Promise<ExamDayCommittee[]> {
+  const res = await http.get<ExamDayCommittee[]>(
+    `/planner/exam-days/${examDayId}/committees`
+  );
+  return res.data;
+}
 
-  deletePruefungstag: async (pt_id: number) =>
-    del(`${PREFIX}/pruefungstage/${pt_id}`),
+export async function createExamDayCommittee(
+  examDayId: number,
+  payload: ExamDayCommitteeCreate
+): Promise<ExamDayCommittee> {
+  const res = await http.post<ExamDayCommittee>(
+    `/planner/exam-days/${examDayId}/committees`,
+    payload
+  );
+  return res.data;
+}
 
-  listAusschuesseForTag: async (pt_id: number) =>
-    getJson<PTAItem[]>(`${PREFIX}/pruefungstage/${pt_id}/ausschuesse`),
+// --- Slots generieren & laden ---
 
-  // --- Zeitschemata ---
-  listZeitschemata: async () =>
-    getJson<Zeitschema[]>(`${PREFIX}/zeitschemata`),
+export interface GenerateSlotsResponse {
+  created_slots: number;
+}
 
-  // --- Slots ---
-  listSlotsByPta: async (pta_id: number) =>
-    getJson<Slot[]>(`${PREFIX}/pruefungstag_ausschuss/${pta_id}/slots`),
+export async function generateSlotsForCommittee(
+  examDayCommitteeId: number
+): Promise<GenerateSlotsResponse> {
+  const res = await http.post<GenerateSlotsResponse>(
+    `/planner/exam-day-committees/${examDayCommitteeId}/generate-slots`,
+    {}
+  );
+  return res.data;
+}
 
-  generateSlots: async (
-    pta_id: number,
-    zeitschema_id: number,
-    anzahl = 6,
-    ueberschreiben = false,
-  ) =>
-    postJson<{ ok: boolean; anzahl: number }>(
-      `${PREFIX}/pruefungstag_ausschuss/${pta_id}/slots/generate`,
-      { zeitschema_id, anzahl, ueberschreiben },
-    ),
+export async function listExamSlots(
+  examDayId: number,
+  committeeId?: number
+): Promise<ExamSlot[]> {
+  const params: Record<string, number> = {};
+  if (committeeId !== undefined) {
+    params.committee_id = committeeId;
+  }
 
-  changeSlotStatus: async (
-    slot_id: number,
-    status: "frei" | "geplant" | "gesperrt" | "abgesagt",
-  ) =>
-    postJson<{ ok: boolean }>(`${PREFIX}/slots/${slot_id}/status`, {
-      status,
-    }),
+  const res = await http.get<ExamSlot[]>(
+    `/planner/exam-days/${examDayId}/slots`,
+    { params }
+  );
+  return res.data;
+}
 
-  assignSlot: async (slot_id: number, pruefkandidat_id: number) =>
-    postJson<{ ok: boolean; pruefung_id: number }>(
-      `${PREFIX}/slots/${slot_id}/assign`,
-      {
-        pruefkandidat_id,
-      },
-    ),
-
-  unassignSlot: async (slot_id: number) =>
-    postJson<{ ok: boolean }>(`${PREFIX}/slots/${slot_id}/unassign`, {}),
-
-  // ===== Wrapper für Stammdaten, damit plannerApi.listKammern() etc. weiter funktionieren
-  listKammern: async () => listKammern(),
-  listBezirkskammern: async (kammer_id?: number) =>
-    listBezirkskammern(kammer_id),
-  listFachbereiche: async () => listFachbereiche(),
-
-  // ===== Fachbereiche & Ausschüsse (für Neuanlage / Filter) =====
-  listAusschuesse: async (params?: {
-    fachbereich_id?: number;
-    kammer_id?: number;
-    bezirkskammer_id?: number;
-  }) => {
-    const qs = new URLSearchParams();
-    if (params?.fachbereich_id)
-      qs.set("fachbereich_id", String(params.fachbereich_id));
-    if (params?.kammer_id) qs.set("kammer_id", String(params.kammer_id));
-    if (params?.bezirkskammer_id)
-      qs.set("bezirkskammer_id", String(params.bezirkskammer_id));
-
-    const url = `${PREFIX}/ausschuesse${
-      qs.toString() ? `?${qs.toString()}` : ""
-    }`;
-    return await getJson<AusschussLite[]>(url);
-  },
-
-  // Zuordnung Tag ↔ Ausschuss bleibt im Planner-Router
-  assignAusschussToTag: async (
-    pt_id: number,
-    payload: {
-      ausschuss_id: number;
-      raum?: string;
-      ort?: string;
-      max_pruefungen?: number;
-      aktiv?: boolean;
-    },
-  ) =>
-    postJson<{ ok: boolean; pta_id: number }>(
-      `${PREFIX}/pruefungstage/${pt_id}/ausschuesse`,
-      payload,
-    ),
+// Optionales Aggregat
+export const plannerApi = {
+  listExamDays,
+  getExamDay,
+  createExamDay,
+  listExamDayCommittees,
+  createExamDayCommittee,
+  generateSlotsForCommittee,
+  listExamSlots,
+  createExam,
+  deleteExam,
+  updateExam,
 };
 
-export interface UpdatePruefungstagDto {
-  datum?: string;
-  ort?: string;
-  kammer_id?: number | null;
-  bezirkskammer_id?: number | null;
-  fachbereich_id?: number | null;
-  raum_default?: string | null;
-  bemerkung?: string | null;
-  status?: "geplant" | "laufend" | "pausiert" | "abgeschlossen" | "archiviert";
-}
-
 export default plannerApi;
+
+// End of frontend/src/lib/api/planner.api.ts

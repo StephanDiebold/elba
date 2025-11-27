@@ -8,14 +8,19 @@ from app.core.database import engine, Base
 
 # Router-Imports (bitte exakt diese Pfade nutzen)
 from app.routes.health import router as health_router
-from app.domains.common.stammdaten import router as stammdaten_router
-from app.domains.common.router import router as common_router
+# from app.domains.common.stammdaten import router as stammdaten_router
+# from app.domains.common.router import router as common_router
 from app.domains.auth.auth import router as auth_router
-from app.domains.exam.router import router as planner_router
+
+# Exam-Domain (falls noch genutzt – sonst raus)
+from app.domains.exam._router import router as exam_router
 
 from app.domains.admin.router_org_units import router as admin_org_units_router
 from app.domains.admin.router_committees import router as admin_committees_router
 
+# WICHTIG: hier direkt den APIRouter importieren, nicht das Modul
+from app.domains.planner.router import router as planner_router
+from app.domains.candidate.router import router as candidate_router
 
 
 app = FastAPI(title="ELBA API", version="0.0.0")
@@ -39,6 +44,7 @@ app.add_middleware(
     max_age=86400,
 )
 
+
 @app.middleware("http")
 async def add_expose_headers(request: Request, call_next):
     resp = await call_next(request)
@@ -46,21 +52,25 @@ async def add_expose_headers(request: Request, call_next):
         resp.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
     return resp
 
+
 # Nur in DEV Tabellen auto-erzeugen
 if os.getenv("ENV", "dev") == "dev":
     Base.metadata.create_all(bind=engine)
 
 # Router registrieren
 app.include_router(health_router)
-app.include_router(stammdaten_router)   # /stammdaten/...
-app.include_router(common_router)       # /common/...
-app.include_router(auth_router)         # /auth/...
-app.include_router(planner_router, prefix="/planner")
+# app.include_router(stammdaten_router)       # /stammdaten/...
+# app.include_router(common_router)           # /common/...
+app.include_router(auth_router)             # /auth/...
 app.include_router(admin_org_units_router)  # /admin/...
-app.include_router(admin_committees_router)  # /admin/...
+app.include_router(admin_committees_router) # /admin/...
 
+app.include_router(exam_router)             # /exam/... (falls gewünscht)
+app.include_router(planner_router)          # /planner/...
+app.include_router(candidate_router)        # /candidate/...
 
 
 @app.get("/")
 def root():
     return {"message": "ELBA Backend läuft 🚀"}
+# End of file

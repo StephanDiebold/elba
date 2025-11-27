@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import NoResultFound
 
-from app.domains.exam.models import (
+from app.domains.exam._models import (
     PruefungstagAusschuss,
     Pruefungsslot,
     Zeitschema,

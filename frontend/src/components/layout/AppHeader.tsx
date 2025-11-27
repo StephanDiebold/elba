@@ -1,6 +1,6 @@
 // src/components/layout/AppHeader.tsx
 
-import { Settings } from "lucide-react";
+import { CalendarDays, Settings, UserRound } from "lucide-react";
 import { Link, NavLink } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,19 +14,28 @@ import {
 import { useAuth } from "@/context/AuthContext";
 import { AdminBadge } from "@/components/ui/AdminBadge";
 
-function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
+function NavItem({
+  to,
+  children,
+  icon,
+}: {
+  to: string;
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+}) {
   return (
     <NavLink
       to={to}
       className={({ isActive }) =>
         [
-          "px-3 py-1.5 rounded-md text-sm",
+          "px-3 py-1.5 rounded-md text-sm flex items-center gap-1",
           isActive
             ? "bg-muted font-medium"
             : "text-muted-foreground hover:text-foreground hover:bg-muted/60",
         ].join(" ")
       }
     >
+      {icon}
       {children}
     </NavLink>
   );
@@ -56,8 +65,23 @@ export default function AppHeader() {
         {/* Hauptnavigation */}
         <nav className="ml-2 flex items-center gap-1">
           <NavItem to="/dashboard">Dashboard</NavItem>
-          <NavItem to="/planner">Planer</NavItem>
-          <NavItem to="/candidates">Kandidaten</NavItem>
+
+          {/* Prüfungstage, mit Kalender-Icon */}
+          <NavItem
+            to="/pruefungstage"
+            icon={<CalendarDays className="h-4 w-4" />}
+          >
+            Prüfungstage
+          </NavItem>
+
+          {/* Prüfungskandidaten, mit Icon */}
+          <NavItem
+            to="/candidates"
+            icon={<UserRound className="h-4 w-4" />}
+          >
+            Prüfkandidaten
+          </NavItem>
+
           <NavItem to="/committees">Ausschüsse</NavItem>
           <NavItem to="/exams">Prüfungen</NavItem>
 

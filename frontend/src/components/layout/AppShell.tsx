@@ -1,15 +1,17 @@
+// AppShell.tsx
 import { Outlet } from "react-router-dom";
 import AppHeader from "./AppHeader";
-import Footer from "./Footer";
 
 export default function AppShell() {
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="flex flex-col min-h-full">
       <AppHeader />
+      {/* Inhalt der jeweiligen Seite */}
       <div className="flex-1">
-        <Outlet /> {/* WICHTIG: ohne das siehst du nix */}
+        <Outlet />
       </div>
-      <Footer />
     </div>
   );
 }
+
+// End of AppShell.tsx

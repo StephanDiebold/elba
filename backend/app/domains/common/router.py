@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.core.deps import get_db
-from app.domains.exam.models import Ausschuss, Fachbereich
+from app.domains.exam._models import Ausschuss, Fachbereich
 
 # WICHTIG: Präfix so wie von Frontend benutzt
 router = APIRouter(prefix="/stammdaten", tags=["Stammdaten"])
