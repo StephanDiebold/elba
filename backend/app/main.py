@@ -12,8 +12,8 @@ from app.routes.health import router as health_router
 # from app.domains.common.router import router as common_router
 from app.domains.auth.auth import router as auth_router
 
-# Exam-Domain (falls noch genutzt – sonst raus)
-from app.domains.exam._router import router as exam_router
+# Exam-Domain
+from app.domains.exam.router import router as exam_router
 
 from app.domains.admin.router_org_units import router as admin_org_units_router
 from app.domains.admin.router_committees import router as admin_committees_router

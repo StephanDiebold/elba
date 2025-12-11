@@ -1,10 +1,20 @@
 # app/domains/planner/models.py
 
-from datetime import date, time as dtime
-from sqlalchemy import Column, Integer, String, Boolean, Date, Time, Enum, ForeignKey
+from datetime import time as dtime
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    Date,
+    Time,
+    Enum,
+    ForeignKey,
+)
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+
 
 class ExamDay(Base):
     __tablename__ = "exam_day"
@@ -19,8 +29,11 @@ class ExamDay(Base):
     status = Column(String(50), nullable=False, default="planned")
     is_active = Column(Boolean, nullable=False, default=True)
 
+    # optionale Relationships, falls du sie später brauchst:
+    # time_scheme = relationship("TimeScheme", back_populates="exam_days")
+    # committees = relationship("ExamDayCommittee", back_populates="exam_day")
+    # slots = relationship("ExamSlot", back_populates="exam_day")
 
-# Die weiteren Tabellen legen wir schon minimal an, damit wir sie später nutzen können
 
 class TimeScheme(Base):
     __tablename__ = "time_scheme"
@@ -32,6 +45,8 @@ class TimeScheme(Base):
     discussion_buffer_minutes = Column(Integer, nullable=False)
     max_slots = Column(Integer, nullable=False)
 
+    # exam_days = relationship("ExamDay", back_populates="time_scheme")
+
 
 class ExamDayCommittee(Base):
     __tablename__ = "exam_day_committee"
@@ -42,6 +57,8 @@ class ExamDayCommittee(Base):
     room = Column(String(100), nullable=True)
     location = Column(String(255), nullable=True)
     time_scheme_id = Column(Integer, nullable=True)
+
+    # exam_day = relationship("ExamDay", back_populates="committees")
 
 
 class ExamSlot(Base):
@@ -61,23 +78,7 @@ class ExamSlot(Base):
     exam_id = Column(Integer, nullable=True)
     notes = Column(String(255), nullable=True)
 
+    # exam_day = relationship("ExamDay", back_populates="slots")
 
-class Exam(Base):
-    __tablename__ = "exam"
 
-    exam_id = Column(Integer, primary_key=True, index=True)
-    candidate_id = Column(Integer, nullable=False)
-    exam_day_id = Column(Integer, ForeignKey("exam_day.exam_day_id"), nullable=False)
-    exam_slot_id = Column(Integer, nullable=False)
-    committee_id = Column(Integer, nullable=False)
-    exam_type = Column(
-        Enum("aevo", "wfw", "it", "custom", name="exam_type"),
-        nullable=False,
-        default="aevo",
-    )
-    status = Column(
-        Enum("planned", "in_progress", "done", "canceled", "no_show", name="exam_status"),
-        nullable=False,
-        default="planned",
-    )
 # End of backend/app/domains/planner/models.py

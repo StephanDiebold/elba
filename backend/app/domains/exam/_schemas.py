@@ -111,3 +111,53 @@ class KandidatOut(BaseModel):
     pruefkandidat_id: int
     vorname: str
     nachname: str
+
+# Einzelbewertung eines Prüfers
+class MemberRatingOut(BaseModel):
+    examiner_id: int
+    examiner_name: str
+    grade: Optional[float] = None
+    points: Optional[float] = None
+    comment: Optional[str] = None
+
+
+class FinalCriterionOut(BaseModel):
+    criterion_id: int
+    criterion_number: int
+    title: str
+    description: Optional[str] = None
+    max_points: int
+
+    member_ratings: List[MemberRatingOut]
+
+    suggested_points: Optional[float] = None
+    suggested_grade: Optional[float] = None
+
+    decided_points: Optional[float] = None
+    decided_grade: Optional[float] = None
+    combined_comment: Optional[str] = None
+
+    max_grade_diff: Optional[float] = None
+    max_points_diff: Optional[float] = None
+    has_conflict: bool
+
+
+class FinalSheetOut(BaseModel):
+    exam_part_id: int
+    exam_id: int
+    part_number: int
+    title: str
+    status: str
+    final_sheet_id: Optional[int] = None
+    criteria: List[FinalCriterionOut]
+
+
+class GradingItemUpdateIn(BaseModel):
+    exam_grading_item_id: int
+    grade: Optional[float] = None
+    points: Optional[float] = None
+    comment: Optional[str] = None
+
+
+class GradingSheetUpdateIn(BaseModel):
+    items: List[GradingItemUpdateIn]

@@ -82,7 +82,6 @@ export default function AppHeader() {
             Prüfkandidaten
           </NavItem>
 
-          <NavItem to="/committees">Ausschüsse</NavItem>
           <NavItem to="/exams">Prüfungen</NavItem>
 
           {/* ADMINISTRATION nur für Admin / Koordinator */}
@@ -92,7 +91,7 @@ export default function AppHeader() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="px-2 flex items-center gap-1 group"
+                  className="px-2 text-sm font-normal flex items-center gap-1 group"
                 >
                   <Settings className="h-4 w-4 transition-transform duration-200 group-hover:rotate-90" />
                   Administration

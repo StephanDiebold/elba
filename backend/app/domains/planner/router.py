@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import get_db
+from app.domains.exam.models import Exam
 from app.domains.planner import models, schemas
 from app.domains.candidate.models import Candidate
 
@@ -193,6 +194,7 @@ def generate_slots(edc_id: int, db: Session = Depends(get_db)):
 # -------------------------------------------------------------------
 # Slots eines Exam Days (inkl. Candidate-Infos)
 # -------------------------------------------------------------------
+
 @router.get("/exam-days/{exam_day_id}/slots")
 def list_slots_for_exam_day(
     exam_day_id: int,
@@ -207,18 +209,18 @@ def list_slots_for_exam_day(
     stmt = (
         select(
             models.ExamSlot,
-            models.Exam.exam_id,
-            models.Exam.candidate_id,
+            Exam.exam_id,
+            Exam.candidate_id,
             Candidate.first_name,
             Candidate.last_name,
         )
         .outerjoin(
-            models.Exam,
-            models.Exam.exam_slot_id == models.ExamSlot.exam_slot_id,
+            Exam,
+            Exam.exam_slot_id == models.ExamSlot.exam_slot_id,
         )
         .outerjoin(
             Candidate,
-            Candidate.candidate_id == models.Exam.candidate_id,
+            Candidate.candidate_id == Exam.candidate_id,
         )
         .where(models.ExamSlot.exam_day_id == exam_day_id)
         .order_by(
@@ -240,8 +242,12 @@ def list_slots_for_exam_day(
                 "exam_day_id": slot.exam_day_id,
                 "committee_id": slot.committee_id,
                 "slot_index": slot.slot_index,
-                "start_time": slot.start_time.isoformat() if hasattr(slot.start_time, "isoformat") else str(slot.start_time),
-                "end_time": slot.end_time.isoformat() if hasattr(slot.end_time, "isoformat") else str(slot.end_time),
+                "start_time": slot.start_time.isoformat()
+                if hasattr(slot.start_time, "isoformat")
+                else str(slot.start_time),
+                "end_time": slot.end_time.isoformat()
+                if hasattr(slot.end_time, "isoformat")
+                else str(slot.end_time),
                 "status": slot.status,
                 "exam_id": exam_id,
                 "candidate_id": candidate_id,
@@ -271,11 +277,11 @@ def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
 
     # 🔒 Regel: Kandidat nur einmal pro Ausschuss + exam_type
     existing = (
-        db.query(models.Exam)
+        db.query(Exam)
         .filter(
-            models.Exam.candidate_id == payload.candidate_id,
-            models.Exam.committee_id == slot.committee_id,
-            models.Exam.exam_type == payload.exam_type,
+            Exam.candidate_id == payload.candidate_id,
+            Exam.committee_id == slot.committee_id,
+            Exam.exam_type == payload.exam_type,
         )
         .first()
     )
@@ -285,7 +291,7 @@ def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
             detail="Kandidat ist für diesen Ausschuss und Prüfungstyp bereits eingeplant.",
         )
 
-    exam = models.Exam(
+    exam = Exam(
         candidate_id=payload.candidate_id,
         exam_day_id=payload.exam_day_id,
         exam_slot_id=payload.exam_slot_id,
@@ -303,7 +309,7 @@ def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
 
 @router.delete("/exams/{exam_id}")
 def delete_exam(exam_id: int, db: Session = Depends(get_db)):
-    exam = db.get(models.Exam, exam_id)
+    exam = db.get(Exam, exam_id)
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
 
@@ -323,7 +329,7 @@ def update_exam(
     payload: schemas.ExamCreate,   # gleiche Felder wie beim Anlegen
     db: Session = Depends(get_db),
 ):
-    exam = db.get(models.Exam, exam_id)
+    exam = db.get(Exam, exam_id)
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
 

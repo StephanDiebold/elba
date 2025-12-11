@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type React from "react";
+import { useNavigate } from "react-router-dom";
 
 import {
   getExamDay,
@@ -10,7 +11,7 @@ import {
   generateSlotsForCommittee,
   listExamSlots,
   createExam,
-  deleteExam
+  deleteExam,
 } from "@/lib/api/planner.api";
 import type {
   ExamDay,
@@ -44,6 +45,8 @@ interface PlannerDetailProps {
 }
 
 export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
+  const navigate = useNavigate();
+
   const [examDay, setExamDay] = useState<ExamDay | null>(null);
   const [committees, setCommittees] = useState<ExamDayCommittee[]>([]);
   const [slots, setSlots] = useState<ExamSlot[]>([]);
@@ -501,7 +504,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
                 {filteredSlots.map((s) => {
                   const name =
                     `${s.candidate_last_name ?? ""}, ${s.candidate_first_name ?? ""}`
-                      .replace(/^,|\s,$/, "")     // überflüssiges Komma weg
+                      .replace(/^,|\s,$/, "")
                       .trim();
 
                   return (
@@ -531,8 +534,14 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
                       </td>
 
                       <td className="border-b px-3 py-2 text-right">
-                        {s.status === "booked" ? (
+                        {s.exam_id ? (
                           <div className="inline-flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => navigate(`/exams/${s.exam_id}`)}
+                            >
+                              Bewerten
+                            </Button>
                             <Button
                               size="sm"
                               variant="outline"

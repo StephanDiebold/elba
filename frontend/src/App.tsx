@@ -23,6 +23,7 @@ import PlannerPage from "@/pages/PlannerPage";
 import ExamDayDetailPage from "@/pages/ExamDayDetailPage";
 
 import CandidatesPage from "@/pages/CandidatesPage";
+import ExamGradingPage from "@/pages/ExamGradingPage";
 
 export default function App() {
   useEffect(() => {
@@ -33,24 +34,35 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <div className="min-h-screen flex flex-col">
-          {/* Hauptinhalt */}
           <main className="flex-1">
             <Routes>
               {/* Public */}
               <Route path="/login" element={<LoginPage />} />
               <Route path="/register" element={<RegisterPage />} />
 
-              {/* Protected */}
+              {/* Protected Bereich */}
               <Route element={<ProtectedRoute />}>
                 <Route element={<AppShell />}>
                   {/* Dashboard */}
                   <Route path="/dashboard" element={<DashboardPage />} />
 
-                  {/* Prüfungstage */}
-                  <Route path="/pruefungstage" element={<PlannerPage />} />
+                  {/* Root → Dashboard */}
+                  <Route
+                    path="/"
+                    element={<Navigate to="/dashboard" replace />}
+                  />
 
-                  {/* Kandidaten-Seite */}
-                  <Route path="candidates" element={<CandidatesPage />} />
+                  {/* Prüfungstage / Planer */}
+                  <Route path="/pruefungstage" element={<PlannerPage />} />
+                  <Route
+                    path="/pruefungstage/:examDayId"
+                    element={<ExamDayDetailPage />}
+                  />
+                  {/* Legacy-Alias, falls noch genutzt */}
+                  <Route path="/planner" element={<PlannerPage />} />
+
+                  {/* Kandidaten */}
+                  <Route path="/candidates" element={<CandidatesPage />} />
 
                   {/* Admin */}
                   <Route path="/admin/org-units" element={<OrgUnitsPage />} />
@@ -62,26 +74,18 @@ export default function App() {
                     path="/admin/committees/:committeeId/members"
                     element={<CommitteeMembersPage />}
                   />
-                  <Route path="/admin/users" element={<UsersAdminPage />} />
-                  <Route path="/admin/roles" element={<RolesAdminPage />} />
+                  <Route path="/admin/users" element={<UsersAdminPage />}
+                  />
+                  <Route path="/admin/roles" element={<RolesAdminPage />}
+                  />
 
                   {/* Account */}
                   <Route path="/account" element={<AccountPage />} />
 
-                  {/* Root → Dashboard */}
-                  <Route
-                    path="/"
-                    element={<Navigate to="/dashboard" replace />}
-                  />
+                  {/* Prüfungsbewertung */}
+                  <Route path="/exams/:examId" element={<ExamGradingPage />} />
 
-                  {/* Prüfungstage */}
-                  <Route path="/pruefungstage" element={<PlannerPage />} />
-                  <Route path="/pruefungstage/:examDayId" element={<ExamDayDetailPage />} />
-
-                  {/* Alias für Legacy-Route, falls noch gebraucht */}
-                  <Route path="/planner" element={<PlannerPage />} />
-
-                  {/* 404 */}
+                  {/* 404 innerhalb des geschützten Bereichs */}
                   <Route
                     path="*"
                     element={
@@ -95,7 +99,6 @@ export default function App() {
             </Routes>
           </main>
 
-          {/* 👇 Globaler Footer, immer einmal unten */}
           <Footer />
         </div>
 
@@ -104,4 +107,4 @@ export default function App() {
     </AuthProvider>
   );
 }
-/* Ende App.tsx */
+// End of App.tsx

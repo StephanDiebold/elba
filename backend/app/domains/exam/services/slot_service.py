@@ -83,3 +83,5 @@ def generate_slots_from_schema(pta_id: int, db: Session) -> int:
 
     db.commit()
     return count
+
+# End of file

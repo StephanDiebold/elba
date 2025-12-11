@@ -36,68 +36,222 @@ async function _postJson<T>(path: string, body?: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-async function _deleteJson<T>(path: string): Promise<T> {
-  const res = await api.reqRaw(path, { method: "DELETE" });
+async function _putJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await api.reqRaw(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? "{}" : JSON.stringify(body),
+  });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new ApiError(`[DELETE ${path}] ${res.status} ${res.statusText}`, res.status, text);
+    throw new ApiError(`[PUT ${path}] ${res.status} ${res.statusText}`, res.status, text);
   }
   return (await res.json()) as T;
 }
 
+/* ==================================================
+ *   NEU (Prüfungsteile, Protokoll, Bewertung)
+ *   Backend-Router-Prefix: /exam -> hier /api/exam/...
+ * ================================================== */
 
-/* ===================== Types ===================== */
-export type ExamDay = {
-  pruefungstag_id: number;
-  datum: string;                           // yyyy-mm-dd
-  ort: string;
-  raum?: string | null;
-  ausschuss_id: number;
-  status: "geplant" | "laufend" | "pausiert" | "abgeschlossen" | "archiviert";
-  start_time: string;                      // "08:10:00"
-  exam_minutes: number;                    // 30
-  debrief_minutes: number;                 // 25
-  break_start: string;                     // "12:40:00"
-  break_end: string;                       // "13:30:00"
-  max_exams: number;                       // 9
-};
+export type ExamType = "aevo" | "wfw" | "it" | "custom";
 
-export type ExamSlot = {
-  pruefung_id: number;
-  pruefkandidat_id?: number | null;
-  kandidat_name?: string | null;
-  start_at?: string | null;                // ISO datetime
-  end_at?: string | null;
-  teil1_art: "praesentation" | "durchfuehrung";
-  status: "geplant" | "aufgerufen" | "teil1" | "teil2" | "bewertung" | "final";
-  theorie_punkte?: number | null;
-  theorie_note?: number | null;
-};
-
-export async function clearSlots(dayId: number): Promise<{ ok: boolean; deleted: number }> {
-  return _deleteJson<{ ok: boolean; deleted: number }>(`/api/exam/pruefungstage/${dayId}/pruefungen`);
+export interface ExamPart {
+  exam_part_id: number;
+  exam_id: number;
+  part_number: number;
+  title: string;
+  part_mode?: string | null;
+  weight: number;
+  status: string;
+  points?: number | null;
+  grade?: number | null;
+  protocol_text?: string | null;
 }
 
-/* ===================== API ===================== */
-/** Liste der Prüfungstage */
-export async function fetchExamDays(): Promise<ExamDay[]> {
-  return _getJson<ExamDay[]>("/api/exam/pruefungstage");
+export interface ExamWithParts {
+  exam_id: number;
+  exam_type: ExamType;
+  status: string;
+  parts: ExamPart[];
 }
 
-/** Einzelner Prüfungstag */
-export async function fetchExamDay(id: number): Promise<ExamDay> {
-  return _getJson<ExamDay>(`/api/exam/pruefungstage/${id}`);
+/* ---------- Protokoll (Pre-Check & Zeiten) ---------- */
+
+export interface ExamProtocol {
+  exam_protocol_id: number;
+  exam_id: number;
+
+  identity_checked: boolean;
+  exam_ability_asked: boolean;
+  bias_cleared: boolean;
+  guest_examiner_consent: boolean;
+  instructions_given: boolean;
+  fraud_notice_given: boolean;
+  devices_notice_given: boolean;
+
+  precheck_comment?: string | null;
+
+  start_time?: string | null; // ISO
+  end_time?: string | null;   // ISO
+
+  part1_mode?: string | null; // 'presentation' | 'demonstration'
 }
 
-/** Slots/Prüfungen eines Tages */
-export async function fetchExamSlots(dayId: number): Promise<ExamSlot[]> {
-  return _getJson<ExamSlot[]>(`/api/exam/pruefungstage/${dayId}/pruefungen`);
+export interface ExamProtocolUpdatePayload {
+  identity_checked?: boolean;
+  exam_ability_asked?: boolean;
+  bias_cleared?: boolean;
+  guest_examiner_consent?: boolean;
+  instructions_given?: boolean;
+  fraud_notice_given?: boolean;
+  devices_notice_given?: boolean;
+
+  precheck_comment?: string | null;
+
+  start_time?: string | null;
+  end_time?: string | null;
+
+  part1_mode?: string | null;
 }
 
-/** Slots gemäß Tageskonfiguration generieren */
-export async function generateSlots(dayId: number): Promise<{ ok: boolean; created: number[] }> {
-  return _postJson<{ ok: boolean; created: number[] }>(
-    `/api/exam/pruefungstage/${dayId}/generate`,
+/* ---------- Member-Grading-Sheet ---------- */
+
+export interface GradingItem {
+  exam_grading_item_id: number;
+  exam_grading_sheet_id: number;
+  grading_criterion_definition_id: number;
+
+  points: number | null;
+  grade: number | null;
+  comment: string | null;
+}
+
+export interface GradingSheet {
+  exam_grading_sheet_id: number;
+  exam_part_id: number;
+  grading_sheet_definition_id: number;
+  examiner_id: number | null;
+
+  sheet_type: "member" | "final";
+  status: "draft" | "submitted" | "locked" | string;
+
+  total_points: number | null;
+  total_grade: number | null;
+
+  items: GradingItem[];
+}
+
+export interface GradingItemUpdate {
+  exam_grading_item_id: number;
+  grade?: number | null;
+  points?: number | null;
+  comment?: string | null;
+}
+
+export interface GradingSheetUpdate {
+  items: GradingItemUpdate[];
+}
+
+/* ---------- Final-Sheet ---------- */
+
+export interface MemberRating {
+  examiner_id: number;
+  examiner_name: string;
+  grade?: number | null;
+  points?: number | null;
+  comment?: string | null;
+}
+
+export interface FinalCriterion {
+  criterion_id: number;
+  criterion_number: number;
+  title: string;
+  description?: string | null;
+  max_points: number;
+
+  member_ratings: MemberRating[];
+
+  suggested_points?: number | null;
+  suggested_grade?: number | null;
+
+  decided_points?: number | null;
+  decided_grade?: number | null;
+  combined_comment?: string | null;
+
+  max_grade_diff?: number | null;
+  max_points_diff?: number | null;
+  has_conflict: boolean;
+}
+
+export interface FinalSheet {
+  exam_part_id: number;
+  exam_id: number;
+  part_number: number;
+  title: string;
+  status: string;
+  final_sheet_id?: number | null;
+  criteria: FinalCriterion[];
+}
+
+/* ---------- API-Funktionen ---------- */
+
+const EXAM_BASE = "/api/exam";
+
+/** Exam inkl. automatisch angelegter Parts */
+export async function fetchExamWithParts(examId: number): Promise<ExamWithParts> {
+  return _getJson<ExamWithParts>(`${EXAM_BASE}/exams/${examId}/parts`);
+}
+
+/** Protokoll holen */
+export async function fetchExamProtocol(examId: number): Promise<ExamProtocol> {
+  return _getJson<ExamProtocol>(`${EXAM_BASE}/exams/${examId}/protocol`);
+}
+
+/** Protokoll aktualisieren (Pre-Check + Zeiten + part1_mode) */
+export async function updateExamProtocol(
+  examId: number,
+  payload: ExamProtocolUpdatePayload
+): Promise<ExamProtocol> {
+  return _putJson<ExamProtocol>(`${EXAM_BASE}/exams/${examId}/protocol`, payload);
+}
+
+/** Member-Sheet für aktuellen User & Prüfungsteil */
+export async function fetchMyGradingSheet(
+  examPartId: number
+): Promise<GradingSheet> {
+  return _getJson<GradingSheet>(
+    `${EXAM_BASE}/exam-parts/${examPartId}/my-grading-sheet`
+  );
+}
+
+/** Items (Noten/Punkte/Kommentare) auf einem Sheet speichern */
+export async function updateGradingSheetItemsApi(
+  sheetId: number,
+  payload: GradingSheetUpdate
+): Promise<void> {
+  await _putJson<{ status: string }>(
+    `${EXAM_BASE}/grading-sheets/${sheetId}/items`,
+    payload
+  );
+}
+
+/** Member-Sheet einreichen (Status -> submitted) */
+export async function submitMyGradingSheet(
+  sheetId: number
+): Promise<{ status: string; all_submitted_for_part: boolean }> {
+  return _postJson<{ status: string; all_submitted_for_part: boolean }>(
+    `${EXAM_BASE}/grading-sheets/${sheetId}/submit`,
     {}
   );
 }
+
+/** Konsolidiertes Final-Sheet für einen Prüfungsteil */
+export async function fetchFinalGradingSheet(
+  examPartId: number
+): Promise<FinalSheet> {
+  return _getJson<FinalSheet>(
+    `${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`
+  );
+}
+// End of frontend/src/lib/api/exam.api.ts
