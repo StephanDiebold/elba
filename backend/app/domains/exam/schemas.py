@@ -16,7 +16,7 @@ class GradingCriterionBase(BaseModel):
 
 
 class GradingCriterionCreate(GradingCriterionBase):
-    grading_criterion_group_id: Optional[int] = None
+    grading_area_id: Optional[int] = None
 
 
 class GradingCriterionUpdate(BaseModel):
@@ -26,39 +26,39 @@ class GradingCriterionUpdate(BaseModel):
     max_points: Optional[int] = None
     weight: Optional[float] = None
     is_active: Optional[bool] = None
-    grading_criterion_group_id: Optional[int] = None
+    grading_area_id: Optional[int] = None
 
 
 class GradingCriterionOut(GradingCriterionBase):
     grading_criterion_definition_id: int
-    grading_criterion_group_id: Optional[int] = None
+    grading_area_id: Optional[int] = None
 
     class Config:
         from_attributes = True  # Pydantic v2
 
 
-# ---------- Group (Lernbereich) ----------
+# ---------- Grading Area (Bewertungsbereich) ----------
 
-class GradingCriterionGroupBase(BaseModel):
-    group_number: int
+class GradingAreaBase(BaseModel):
+    area_number: int
     title: str
     description: Optional[str] = None
     is_active: bool = True
 
 
-class GradingCriterionGroupCreate(GradingCriterionGroupBase):
+class GradingAreaCreate(GradingAreaBase):
     pass
 
 
-class GradingCriterionGroupUpdate(BaseModel):
-    group_number: Optional[int] = None
+class GradingAreaUpdate(BaseModel):
+    area_number: Optional[int] = None
     title: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
 
 
-class GradingCriterionGroupOut(GradingCriterionGroupBase):
-    grading_criterion_group_id: int
+class GradingAreaOut(GradingAreaBase):
+    grading_area_id: int
     criteria: List[GradingCriterionOut] = []
 
     class Config:
@@ -92,10 +92,51 @@ class GradingSheetDefinitionOut(GradingSheetDefinitionBase):
     grading_sheet_definition_id: int
     created_at: datetime
     updated_at: datetime
-    groups: List[GradingCriterionGroupOut] = []
+    areas: List[GradingAreaOut] = []
 
     class Config:
         from_attributes = True
+
+
+# ---------- Expert Discussion Area Definition ----------
+
+from typing import List, Optional
+from datetime import date, datetime
+from pydantic import BaseModel
+
+# ...
+
+class ExpertDiscussionAreaBase(BaseModel):
+    code: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    expected_answer: Optional[str] = None
+    sort_order: int = 0
+    is_active: bool = True
+
+
+class ExpertDiscussionAreaCreate(ExpertDiscussionAreaBase):
+    pass  # subject_id kommt aus dem Pfad (subjects/{subject_id})
+
+
+class ExpertDiscussionAreaUpdate(BaseModel):
+    code: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    expected_answer: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class ExpertDiscussionAreaOut(ExpertDiscussionAreaBase):
+    expert_discussion_area_definition_id: int
+    subject_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
 
 # ---------- Exam Protocol ----------
 
@@ -115,7 +156,6 @@ class ExamProtocolBase(BaseModel):
 
 
 class ExamProtocolUpdate(BaseModel):
-    # alle Felder optional, damit Partial-Update möglich ist
     identity_checked: Optional[bool] = None
     exam_ability_asked: Optional[bool] = None
     bias_cleared: Optional[bool] = None
@@ -129,15 +169,12 @@ class ExamProtocolUpdate(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
 
-    # Auswahl für Teil 1: Präsentation vs. Durchführung
     part1_mode: Optional[str] = None  # 'presentation' | 'demonstration'
 
 
 class ExamProtocolOut(ExamProtocolBase):
     exam_protocol_id: int
     exam_id: int
-
-    # Für die UI hilfreich: aktuellen Modus von Teil 1 mitliefern
     part1_mode: Optional[str] = None
 
     class Config:
@@ -167,7 +204,51 @@ class ExamWithPartsOut(BaseModel):
     status: str
     parts: List[ExamPartOut]
 
-# Einzelbewertung eines Prüfers
+
+# ---------- Expert Discussion Items (Fachgespräch) ----------
+
+class ExpertDiscussionItemBase(BaseModel):
+    # optional Verknüpfung auf eine definierte Area (Dropdown)
+    expert_discussion_area_definition_id: Optional[int] = None
+
+    # immer gespeicherter Titel (auch wenn Definition später geändert/gelöscht wird)
+    area_title: str
+
+    candidate_statement: Optional[str] = None
+    examiner_comment: Optional[str] = None
+
+    grade: Optional[float] = None   # Note in Viertelschritten
+    points: Optional[float] = None  # optional, berechnet
+
+
+class ExpertDiscussionItemCreate(ExpertDiscussionItemBase):
+    """
+    exam_part_id kommt aus dem Pfad (exam-parts/{exam_part_id}).
+    """
+    pass
+
+
+class ExpertDiscussionItemUpdate(BaseModel):
+    expert_discussion_area_definition_id: Optional[int] = None
+    area_title: Optional[str] = None
+    candidate_statement: Optional[str] = None
+    examiner_comment: Optional[str] = None
+    grade: Optional[float] = None
+    points: Optional[float] = None
+
+
+class ExpertDiscussionItemOut(ExpertDiscussionItemBase):
+    exam_expert_discussion_item_id: int
+    exam_part_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Final Sheet ----------
+
 class MemberRatingOut(BaseModel):
     examiner_id: int
     examiner_name: str
@@ -207,6 +288,8 @@ class FinalSheetOut(BaseModel):
     criteria: List[FinalCriterionOut]
 
 
+# ---------- Updates ----------
+
 class GradingItemUpdateIn(BaseModel):
     exam_grading_item_id: int
     grade: Optional[float] = None
@@ -220,7 +303,6 @@ class GradingSheetUpdateIn(BaseModel):
 
 class FinalCriterionDecisionIn(BaseModel):
     """
-    Eingabe für die finale Entscheidung pro Kriterium.
     criterion_id == grading_criterion_definition_id
     """
     criterion_id: int
@@ -230,11 +312,6 @@ class FinalCriterionDecisionIn(BaseModel):
 
 
 class FinalSheetDecisionIn(BaseModel):
-    """
-    Eingabe für den gesamten finalen Bogen eines Prüfungsteils.
-    exam_part_id kommt aus dem Path-Parameter, daher hier nicht nötig.
-    """
     criteria: List[FinalCriterionDecisionIn]
-
 
 # End of file

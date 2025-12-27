@@ -124,6 +124,11 @@ export default function AppHeader() {
                     Rollen
                   </NavLink>
                 </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <NavLink to="/admin/time-schemes" className="w-full">
+                    Zeitschema
+                  </NavLink>
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           )}

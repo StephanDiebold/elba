@@ -15,12 +15,12 @@ class User(Base):
     __tablename__ = "user"
 
     user_id = Column(Integer, primary_key=True, autoincrement=True)
+
     identifier = Column(String(50), unique=True)
     email = Column(String(255), nullable=False, unique=True)
     username = Column(String(100))
     password_hash = Column(String(255), nullable=False)
 
-    # ✅ neue englische Spalten
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
     mobile_number = Column(String(50))
@@ -30,10 +30,9 @@ class User(Base):
     locale = Column(String(10))
     time_zone = Column(String(50))
 
-    is_active = Column(Boolean, default=True)  # DB-Default = 1
+    is_active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
 
-    # Rollen
     roles = relationship(
         "Role",
         secondary=user_role,
@@ -48,6 +47,9 @@ class Role(Base):
     role_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False, unique=True)
 
-    users = relationship("User", secondary=user_role, back_populates="roles")
-
-# Ende app/domains/auth/models.py
+    users = relationship(
+        "User",
+        secondary=user_role,
+        back_populates="roles",
+    )
+# End of app/domains/auth/models.py

@@ -22,6 +22,13 @@ function buildOrgUnitQueryParams(params?: OrgUnitListQuery) {
 
   if (params.type) query.type = params.type;
   if (typeof params.is_active === "boolean") query.is_active = params.is_active;
+
+  // ✅ NEU: parent_org_unit_id unterstützen (z.B. Bezirkskammern einer Kammer)
+  // Falls OrgUnitListQuery das Feld noch nicht enthält, ergänze es in admin.types
+  if (typeof params.parent_org_unit_id === "number") {
+    query.parent_org_unit_id = (params as any).parent_org_unit_id;
+  }
+
   if (params.search && params.search.trim().length > 0) {
     query.search = params.search.trim();
   }
@@ -42,6 +49,29 @@ export async function listOrgUnits(
     params: buildOrgUnitQueryParams(params),
   });
   return data;
+}
+
+/**
+ * ✅ Convenience: nur Kammern (type=chamber)
+ */
+export async function listChambers(): Promise<OrgUnitOut[]> {
+  // (cast ist nur nötig, falls type in deinem OrgUnitListQuery enger typisiert ist)
+  return listOrgUnits({ type: "chamber" } as OrgUnitListQuery);
+}
+
+/**
+ * ✅ Convenience: nur Bezirkskammern zu einer Kammer
+ */
+export async function listDistrictChambers(
+  chamberOrgUnitId: number
+): Promise<OrgUnitOut[]> {
+  return listOrgUnits(
+    {
+      type: "district_chamber",
+      // Falls OrgUnitListQuery das Feld noch nicht kennt: in admin.types ergänzen
+      parent_org_unit_id: chamberOrgUnitId,
+    } as any
+  );
 }
 
 /**

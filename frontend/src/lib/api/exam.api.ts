@@ -1,5 +1,6 @@
 // src/lib/api/exam.api.ts
-import { api } from "@/lib/api";
+import type { AxiosError } from "axios";
+import { httpClient } from "@/lib/httpClient";
 
 /* ===================== Error ===================== */
 
@@ -13,40 +14,52 @@ export class ApiError extends Error {
   }
 }
 
-/* ===================== Helper ===================== */
-async function _getJson<T>(path: string): Promise<T> {
-  const res = await api.reqRaw(path, { method: "GET" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new ApiError(`[GET ${path}] ${res.status} ${res.statusText}`, res.status, text);
+function toApiError(method: string, path: string, err: unknown): ApiError {
+  const ax = err as AxiosError<any>;
+  const status = ax?.response?.status ?? 0;
+
+  let body: string | undefined;
+  try {
+    const data = ax?.response?.data;
+    body = typeof data === "string" ? data : data ? JSON.stringify(data) : undefined;
+  } catch {
+    body = undefined;
   }
-  return (await res.json()) as T;
+
+  const statusText =
+    (ax?.response as any)?.statusText ??
+    (status ? "Error" : "Network Error");
+
+  return new ApiError(`[${method} ${path}] ${status} ${statusText}`, status, body);
+}
+
+/* ===================== Helper ===================== */
+
+async function _getJson<T>(path: string): Promise<T> {
+  try {
+    const { data } = await httpClient.get<T>(path);
+    return data;
+  } catch (err) {
+    throw toApiError("GET", path, err);
+  }
 }
 
 async function _postJson<T>(path: string, body?: unknown): Promise<T> {
-  const res = await api.reqRaw(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? "{}" : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new ApiError(`[POST ${path}] ${res.status} ${res.statusText}`, res.status, text);
+  try {
+    const { data } = await httpClient.post<T>(path, body ?? {});
+    return data;
+  } catch (err) {
+    throw toApiError("POST", path, err);
   }
-  return (await res.json()) as T;
 }
 
 async function _putJson<T>(path: string, body?: unknown): Promise<T> {
-  const res = await api.reqRaw(path, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: body === undefined ? "{}" : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new ApiError(`[PUT ${path}] ${res.status} ${res.statusText}`, res.status, text);
+  try {
+    const { data } = await httpClient.put<T>(path, body ?? {});
+    return data;
+  } catch (err) {
+    throw toApiError("PUT", path, err);
   }
-  return (await res.json()) as T;
 }
 
 /* ==================================================
@@ -93,7 +106,7 @@ export interface ExamProtocol {
   precheck_comment?: string | null;
 
   start_time?: string | null; // ISO
-  end_time?: string | null;   // ISO
+  end_time?: string | null; // ISO
 
   part1_mode?: string | null; // 'presentation' | 'demonstration'
 }
@@ -217,12 +230,8 @@ export async function updateExamProtocol(
 }
 
 /** Member-Sheet für aktuellen User & Prüfungsteil */
-export async function fetchMyGradingSheet(
-  examPartId: number
-): Promise<GradingSheet> {
-  return _getJson<GradingSheet>(
-    `${EXAM_BASE}/exam-parts/${examPartId}/my-grading-sheet`
-  );
+export async function fetchMyGradingSheet(examPartId: number): Promise<GradingSheet> {
+  return _getJson<GradingSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/my-grading-sheet`);
 }
 
 /** Items (Noten/Punkte/Kommentare) auf einem Sheet speichern */
@@ -230,10 +239,7 @@ export async function updateGradingSheetItemsApi(
   sheetId: number,
   payload: GradingSheetUpdate
 ): Promise<void> {
-  await _putJson<{ status: string }>(
-    `${EXAM_BASE}/grading-sheets/${sheetId}/items`,
-    payload
-  );
+  await _putJson<{ status: string }>(`${EXAM_BASE}/grading-sheets/${sheetId}/items`, payload);
 }
 
 /** Member-Sheet einreichen (Status -> submitted) */
@@ -247,11 +253,8 @@ export async function submitMyGradingSheet(
 }
 
 /** Konsolidiertes Final-Sheet für einen Prüfungsteil */
-export async function fetchFinalGradingSheet(
-  examPartId: number
-): Promise<FinalSheet> {
-  return _getJson<FinalSheet>(
-    `${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`
-  );
+export async function fetchFinalGradingSheet(examPartId: number): Promise<FinalSheet> {
+  return _getJson<FinalSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`);
 }
+
 // End of frontend/src/lib/api/exam.api.ts

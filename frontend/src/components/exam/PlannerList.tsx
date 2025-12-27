@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import {
   listExamDays,
   createExamDay,
+  deleteExamDay,          // <-- neu
   type ExamDay,
   type ExamDayCreate,
 } from "@/lib/api/planner.api";
@@ -28,6 +29,8 @@ export default function PlannerList() {
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+
+  const [deletingId, setDeletingId] = useState<number | null>(null); // <-- neu
 
   const [form, setForm] = useState<{
     date: string;
@@ -140,6 +143,33 @@ export default function PlannerList() {
       setCreateError("Der Prüfungstag konnte nicht angelegt werden.");
     } finally {
       setCreating(false);
+    }
+  };
+
+  // --- Prüfungstag löschen ---
+  const handleDelete = async (day: ExamDay) => {
+    setError(null);
+    const confirmed = window.confirm(
+      `Prüfungstag am ${day.date} in ${day.location || "?"} wirklich löschen?`
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingId(day.exam_day_id);
+      await deleteExamDay(day.exam_day_id);
+
+      // Lokal aus der Liste entfernen
+      setExamDays((prev) =>
+        prev.filter((d) => d.exam_day_id !== day.exam_day_id)
+      );
+    } catch (err: any) {
+      console.error("Fehler beim Löschen eines Prüfungstags:", err);
+      const msg =
+        err?.response?.data?.detail ||
+        "Der Prüfungstag konnte nicht gelöscht werden.";
+      setError(msg);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -315,15 +345,27 @@ export default function PlannerList() {
                     </span>
                   </td>
                   <td className="px-3 py-2 border-b text-right">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        navigate(`/pruefungstage/${day.exam_day_id}`)
-                      }
-                    >
-                      Details
-                    </Button>
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          navigate(`/pruefungstage/${day.exam_day_id}`)
+                        }
+                      >
+                        Details
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => handleDelete(day)}
+                        disabled={deletingId === day.exam_day_id}
+                      >
+                        {deletingId === day.exam_day_id
+                          ? "Löschen…"
+                          : "Löschen"}
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}

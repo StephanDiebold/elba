@@ -8,15 +8,24 @@ from app.core.database import engine, Base
 
 # Router-Imports (bitte exakt diese Pfade nutzen)
 from app.routes.health import router as health_router
+
 # from app.domains.common.stammdaten import router as stammdaten_router
+
 # from app.domains.common.router import router as common_router
 from app.domains.auth.auth import router as auth_router
+# Wichtig: registriert subject in SQLAlchemy Metadata
+from app.domains.common.models_subject import Subject  # noqa: F401
+
 
 # Exam-Domain
 from app.domains.exam.router import router as exam_router
 
 from app.domains.admin.router_org_units import router as admin_org_units_router
 from app.domains.admin.router_committees import router as admin_committees_router
+
+from app.domains.admin.router_time_schemes import router as admin_time_schemes_router
+
+from app.domains.admin.router_subjects import router as admin_subjects_router
 
 # WICHTIG: hier direkt den APIRouter importieren, nicht das Modul
 from app.domains.planner.router import router as planner_router
@@ -64,6 +73,9 @@ app.include_router(health_router)
 app.include_router(auth_router)             # /auth/...
 app.include_router(admin_org_units_router)  # /admin/...
 app.include_router(admin_committees_router) # /admin/...
+app.include_router(admin_time_schemes_router)  # /admin/...
+app.include_router(admin_subjects_router)      # /admin/...
+
 
 app.include_router(exam_router)             # /exam/... (falls gewünscht)
 app.include_router(planner_router)          # /planner/...

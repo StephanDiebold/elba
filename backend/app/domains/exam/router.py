@@ -8,20 +8,23 @@ from app.core.deps import get_db
 from app.domains.auth.auth import get_current_user
 from app.domains.exam.models import (
     GradingSheetDefinition,
-    GradingCriterionGroup,
+    GradingArea,
     GradingCriterionDefinition,
     Exam,
     ExamPart,
     ExamProtocol,
     ExamGradingSheet,
+    ExamGradingItem,
+    ExpertDiscussionAreaDefinition,
+    ExamExpertDiscussionItem,
 )
 from app.domains.exam.schemas import (
     GradingSheetDefinitionOut,
     GradingSheetDefinitionCreate,
     GradingSheetDefinitionUpdate,
-    GradingCriterionGroupOut,
-    GradingCriterionGroupCreate,
-    GradingCriterionGroupUpdate,
+    GradingAreaOut,
+    GradingAreaCreate,
+    GradingAreaUpdate,
     GradingCriterionOut,
     GradingCriterionCreate,
     GradingCriterionUpdate,
@@ -31,7 +34,13 @@ from app.domains.exam.schemas import (
     ExamWithPartsOut,
     FinalSheetOut,
     GradingSheetUpdateIn,
-    FinalSheetDecisionIn
+    FinalSheetDecisionIn,
+    ExpertDiscussionAreaOut,
+    ExpertDiscussionAreaCreate,
+    ExpertDiscussionAreaUpdate,
+    ExpertDiscussionItemOut,
+    ExpertDiscussionItemCreate,
+    ExpertDiscussionItemUpdate,
 )
 
 from app.domains.exam.services.grading_service import (
@@ -44,13 +53,10 @@ from app.domains.exam.services.grading_service import (
 
 from app.domains.exam.services.parts_service import ensure_exam_parts_for_exam
 
-# Der zweite Aufruf überschreibt den ersten – relevant ist "/exam"
-# router = APIRouter(prefix="/admin", tags=["admin-exam-grading"])
 router = APIRouter(prefix="/exam", tags=["exam"])
 
 
 # ---- Grading Sheet Definitions ----
-
 
 @router.get(
     "/subjects/{subject_id}/grading-sheets",
@@ -146,20 +152,18 @@ def update_grading_sheet_definition(
     return sheet
 
 
-# ---- Groups / Lernbereiche ----
-
+# ---- Areas / Bewertungsbereiche ----
 
 @router.post(
-    "/grading-sheets/{grading_sheet_definition_id}/groups",
-    response_model=GradingCriterionGroupOut,
+    "/grading-sheets/{grading_sheet_definition_id}/areas",
+    response_model=GradingAreaOut,
     status_code=201,
 )
-def create_grading_group(
+def create_grading_area(
     grading_sheet_definition_id: int,
-    data: GradingCriterionGroupCreate,
+    data: GradingAreaCreate,
     db: Session = Depends(get_db),
 ):
-    # optional: prüfen, ob Sheet existiert
     sheet = (
         db.query(GradingSheetDefinition)
         .filter(
@@ -171,74 +175,67 @@ def create_grading_group(
     if not sheet:
         raise HTTPException(status_code=404, detail="Grading sheet not found")
 
-    group = GradingCriterionGroup(
+    area = GradingArea(
         grading_sheet_definition_id=grading_sheet_definition_id,
-        group_number=data.group_number,
+        area_number=data.area_number,
         title=data.title,
         description=data.description,
         is_active=data.is_active,
     )
-    db.add(group)
+    db.add(area)
     db.commit()
-    db.refresh(group)
-    return group
+    db.refresh(area)
+    return area
 
 
 @router.put(
-    "/grading-groups/{grading_criterion_group_id}",
-    response_model=GradingCriterionGroupOut,
+    "/grading-areas/{grading_area_id}",
+    response_model=GradingAreaOut,
 )
-def update_grading_group(
-    grading_criterion_group_id: int,
-    data: GradingCriterionGroupUpdate,
+def update_grading_area(
+    grading_area_id: int,
+    data: GradingAreaUpdate,
     db: Session = Depends(get_db),
 ):
-    group = (
-        db.query(GradingCriterionGroup)
-        .filter(
-            GradingCriterionGroup.grading_criterion_group_id
-            == grading_criterion_group_id
-        )
+    area = (
+        db.query(GradingArea)
+        .filter(GradingArea.grading_area_id == grading_area_id)
         .first()
     )
-    if not group:
-        raise HTTPException(status_code=404, detail="Grading group not found")
+    if not area:
+        raise HTTPException(status_code=404, detail="Grading area not found")
 
     for field, value in data.model_dump(exclude_unset=True).items():
-        setattr(group, field, value)
+        setattr(area, field, value)
 
     db.commit()
-    db.refresh(group)
-    return group
+    db.refresh(area)
+    return area
 
 
 # ---- Criteria ----
 
-
 @router.post(
-    "/grading-groups/{grading_criterion_group_id}/criteria",
+    "/grading-areas/{grading_area_id}/criteria",
     response_model=GradingCriterionOut,
     status_code=201,
 )
-def create_criterion_for_group(
-    grading_criterion_group_id: int,
+def create_criterion_for_area(
+    grading_area_id: int,
     data: GradingCriterionCreate,
     db: Session = Depends(get_db),
 ):
-    group = (
-        db.query(GradingCriterionGroup)
-        .filter(
-            GradingCriterionGroup.grading_criterion_group_id
-            == grading_criterion_group_id
-        )
+    area = (
+        db.query(GradingArea)
+        .filter(GradingArea.grading_area_id == grading_area_id)
         .first()
     )
-    if not group:
-        raise HTTPException(status_code=404, detail="Grading group not found")
+    if not area:
+        raise HTTPException(status_code=404, detail="Grading area not found")
 
     criterion = GradingCriterionDefinition(
-        grading_sheet_definition_id=group.grading_sheet_definition_id,
-        grading_criterion_group_id=grading_criterion_group_id,
+        grading_sheet_definition_id=area.grading_sheet_definition_id,
+        grading_area_id=grading_area_id,
         criterion_number=data.criterion_number,
         title=data.title,
         description=data.description,
@@ -274,20 +271,17 @@ def update_criterion(
 
     payload = data.model_dump(exclude_unset=True)
 
-    # wenn Gruppe geändert wird, sheet_id nachziehen
-    if "grading_criterion_group_id" in payload:
-        new_group_id = payload["grading_criterion_group_id"]
-        if new_group_id is not None:
-            group = (
-                db.query(GradingCriterionGroup)
-                .filter(
-                    GradingCriterionGroup.grading_criterion_group_id == new_group_id
-                )
+    if "grading_area_id" in payload:
+        new_area_id = payload["grading_area_id"]
+        if new_area_id is not None:
+            area = (
+                db.query(GradingArea)
+                .filter(GradingArea.grading_area_id == new_area_id)
                 .first()
             )
-            if not group:
-                raise HTTPException(status_code=404, detail="Target group not found")
-            criterion.grading_sheet_definition_id = group.grading_sheet_definition_id
+            if not area:
+                raise HTTPException(status_code=404, detail="Target area not found")
+            criterion.grading_sheet_definition_id = area.grading_sheet_definition_id
 
     for field, value in payload.items():
         setattr(criterion, field, value)
@@ -295,6 +289,86 @@ def update_criterion(
     db.commit()
     db.refresh(criterion)
     return criterion
+
+# ---- Expert Discussion Area Definitions (Fachgespräch-Vorlagen) ----
+
+
+@router.get(
+    "/subjects/{subject_id}/expert-discussion-areas",
+    response_model=List[ExpertDiscussionAreaOut],
+)
+def list_expert_discussion_areas_for_subject(
+    subject_id: int,
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    query = db.query(ExpertDiscussionAreaDefinition).filter(
+        ExpertDiscussionAreaDefinition.subject_id == subject_id
+    )
+    if not include_inactive:
+        query = query.filter(ExpertDiscussionAreaDefinition.is_active == True)
+
+    areas = query.order_by(
+        ExpertDiscussionAreaDefinition.sort_order,
+        ExpertDiscussionAreaDefinition.title,
+    ).all()
+    return areas
+
+
+@router.post(
+    "/subjects/{subject_id}/expert-discussion-areas",
+    response_model=ExpertDiscussionAreaOut,
+    status_code=201,
+)
+def create_expert_discussion_area(
+    subject_id: int,
+    data: ExpertDiscussionAreaCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    area = ExpertDiscussionAreaDefinition(
+        subject_id=subject_id,
+        code=data.code,
+        title=data.title,
+        description=data.description,
+        expected_answer=data.expected_answer,
+        sort_order=data.sort_order,
+        is_active=data.is_active,
+    )
+    db.add(area)
+    db.commit()
+    db.refresh(area)
+    return area
+
+
+@router.put(
+    "/expert-discussion-areas/{area_id}",
+    response_model=ExpertDiscussionAreaOut,
+)
+def update_expert_discussion_area(
+    area_id: int,
+    data: ExpertDiscussionAreaUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    area = (
+        db.query(ExpertDiscussionAreaDefinition)
+        .filter(
+            ExpertDiscussionAreaDefinition.expert_discussion_area_definition_id
+            == area_id
+        )
+        .first()
+    )
+    if not area:
+        raise HTTPException(status_code=404, detail="Expert discussion area not found")
+
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(area, field, value)
+
+    db.commit()
+    db.refresh(area)
+    return area
 
 
 # ---- Exam Parts & Protocol ----
@@ -410,6 +484,105 @@ def update_exam_protocol(
         None,
     )
     return out
+
+# ---- Expert Discussion Items (Fachgespräch / Protokollzeilen) ----
+
+
+@router.get(
+    "/exam-parts/{exam_part_id}/expert-discussion-items",
+    response_model=List[ExpertDiscussionItemOut],
+)
+def list_expert_discussion_items(
+    exam_part_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    items = (
+        db.query(ExamExpertDiscussionItem)
+        .filter(ExamExpertDiscussionItem.exam_part_id == exam_part_id)
+        .order_by(ExamExpertDiscussionItem.exam_expert_discussion_item_id)
+        .all()
+    )
+    return items
+
+
+@router.post(
+    "/exam-parts/{exam_part_id}/expert-discussion-items",
+    response_model=ExpertDiscussionItemOut,
+    status_code=201,
+)
+def create_expert_discussion_item(
+    exam_part_id: int,
+    data: ExpertDiscussionItemCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    # Optional: prüfen, ob exam_part existiert
+    part = db.query(ExamPart).filter(ExamPart.exam_part_id == exam_part_id).first()
+    if not part:
+        raise HTTPException(status_code=404, detail="Exam part not found")
+
+    item = ExamExpertDiscussionItem(
+        exam_part_id=exam_part_id,
+        expert_discussion_area_definition_id=data.expert_discussion_area_definition_id,
+        area_title=data.area_title,
+        candidate_statement=data.candidate_statement,
+        examiner_comment=data.examiner_comment,
+        grade=data.grade,
+        points=data.points,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.put(
+    "/expert-discussion-items/{item_id}",
+    response_model=ExpertDiscussionItemOut,
+)
+def update_expert_discussion_item(
+    item_id: int,
+    data: ExpertDiscussionItemUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    item = (
+        db.query(ExamExpertDiscussionItem)
+        .filter(ExamExpertDiscussionItem.exam_expert_discussion_item_id == item_id)
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Expert discussion item not found")
+
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(item, field, value)
+
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete(
+    "/expert-discussion-items/{item_id}",
+    status_code=204,
+)
+def delete_expert_discussion_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    item = (
+        db.query(ExamExpertDiscussionItem)
+        .filter(ExamExpertDiscussionItem.exam_expert_discussion_item_id == item_id)
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Expert discussion item not found")
+
+    db.delete(item)
+    db.commit()
+    return
 
 
 # ---- Member Grading Sheets ----

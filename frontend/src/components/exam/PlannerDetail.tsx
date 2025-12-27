@@ -1,30 +1,24 @@
 // src/components/exam/PlannerDetail.tsx
 
 import { useEffect, useState } from "react";
-import type React from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
   getExamDay,
-  listExamDayCommittees,
-  createExamDayCommittee,
-  generateSlotsForCommittee,
+  listExamDayTeams,
+  createExamDayTeam,
+  deleteExamDayTeam,
+  generateSlotsForTeam,
+  deleteSlotsForTeam,
   listExamSlots,
   createExam,
-  deleteExam,
 } from "@/lib/api/planner.api";
-import type {
-  ExamDay,
-  ExamDayCommittee,
-  ExamDayCommitteeCreate,
-  ExamSlot,
-  ExamType,
-} from "@/lib/api/planner.api";
+
+import type { ExamDay, ExamDayTeam, ExamSlot, ExamType } from "@/lib/api/planner.api";
 
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
-  DialogTrigger,
   DialogContent,
   DialogHeader,
   DialogFooter,
@@ -40,6 +34,8 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 
+import { ExamDayTeamsTabs } from "@/components/exam/ExamDayTeamsTabs";
+
 interface PlannerDetailProps {
   examDayId: number;
 }
@@ -48,32 +44,29 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
   const navigate = useNavigate();
 
   const [examDay, setExamDay] = useState<ExamDay | null>(null);
-  const [committees, setCommittees] = useState<ExamDayCommittee[]>([]);
+  const [teams, setTeams] = useState<ExamDayTeam[]>([]);
   const [slots, setSlots] = useState<ExamSlot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedCommitteeId, setSelectedCommitteeId] = useState<
-    number | "all"
-  >("all");
 
-  const [committeeDialogOpen, setCommitteeDialogOpen] = useState(false);
-  const [committeeForm, setCommitteeForm] = useState<{
-    committee_id: string;
-    room: string;
-    location: string;
+  // --- Team anlegen ---
+  const [teamDialogOpen, setTeamDialogOpen] = useState(false);
+  const [teamForm, setTeamForm] = useState<{
+    name: string;
     time_scheme_id: string;
+    user_ids: string; // CSV
   }>({
-    committee_id: "",
-    room: "",
-    location: "",
+    name: "",
     time_scheme_id: "",
+    user_ids: "",
   });
-  const [committeeError, setCommitteeError] = useState<string | null>(null);
-  const [savingCommittee, setSavingCommittee] = useState(false);
-  const [slotsGeneratingId, setSlotsGeneratingId] = useState<number | null>(
-    null,
-  );
+  const [teamError, setTeamError] = useState<string | null>(null);
+  const [savingTeam, setSavingTeam] = useState(false);
 
+  // --- Slots busy state ---
+  const [slotsBusyTeamId, setSlotsBusyTeamId] = useState<number | null>(null);
+
+  // --- Candidate assign ---
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [assignSlot, setAssignSlot] = useState<ExamSlot | null>(null);
   const [assignForm, setAssignForm] = useState<{
@@ -86,36 +79,44 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
   const [assignError, setAssignError] = useState<string | null>(null);
   const [assignSaving, setAssignSaving] = useState(false);
 
-  // Prüfungstag + Ausschüsse + Slots laden
+  const formatTime = (t: string) => t?.slice(0, 5) || t;
+
+  // ------------------------------------------------------
+  // Load
+  // ------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
+      setLoading(true);
+      setError(null);
+
       try {
-        setLoading(true);
-        setError(null);
-
-        const [day, comms, s] = await Promise.all([
-          getExamDay(examDayId),
-          listExamDayCommittees(examDayId),
-          listExamSlots(examDayId),
-        ]);
-
+        const day = await getExamDay(examDayId);
+        if (!cancelled) setExamDay(day);
+      } catch {
         if (!cancelled) {
-          setExamDay(day);
-          setCommittees(comms);
-          setSlots(s);
-        }
-      } catch (err) {
-        console.error("Fehler beim Laden des Prüfungstags:", err);
-        if (!cancelled) {
-          setError("Der Prüfungstag konnte nicht geladen werden.");
-        }
-      } finally {
-        if (!cancelled) {
+          setError("Prüfungstag konnte nicht geladen werden.");
           setLoading(false);
         }
+        return;
       }
+
+      try {
+        const t = await listExamDayTeams(examDayId);
+        if (!cancelled) setTeams(t);
+      } catch {
+        if (!cancelled) setTeams([]);
+      }
+
+      try {
+        const s = await listExamSlots(examDayId);
+        if (!cancelled) setSlots(s);
+      } catch {
+        if (!cancelled) setSlots([]);
+      }
+
+      if (!cancelled) setLoading(false);
     }
 
     load();
@@ -124,74 +125,136 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     };
   }, [examDayId]);
 
-  const handleCommitteeChange =
-    (field: keyof typeof committeeForm) =>
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setCommitteeForm((prev) => ({
-        ...prev,
-        [field]: e.target.value,
-      }));
-    };
+  const reloadTeamsAndSlots = async () => {
+    const [t, s] = await Promise.all([
+      listExamDayTeams(examDayId),
+      listExamSlots(examDayId),
+    ]);
+    setTeams(t);
+    setSlots(s);
+  };
 
-  const handleAddCommittee = async () => {
-    setCommitteeError(null);
+  // ------------------------------------------------------
+  // Team create
+  // ------------------------------------------------------
+  const handleCreateTeam = async () => {
+    setTeamError(null);
 
-    if (!committeeForm.committee_id || !committeeForm.time_scheme_id) {
-      setCommitteeError(
-        "Bitte mindestens Ausschuss-ID und Zeitschema-ID ausfüllen.",
+    const userIds = teamForm.user_ids
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .map(Number);
+
+    if (userIds.length !== 3 || userIds.some((x) => Number.isNaN(x))) {
+      setTeamError(
+        "Ein Ausschuss muss genau 3 Prüfer enthalten (User-IDs, Komma-separiert)."
       );
       return;
     }
 
-    const payload: ExamDayCommitteeCreate = {
-      committee_id: Number(committeeForm.committee_id),
-      room: committeeForm.room || null,
-      location: committeeForm.location || null,
-      time_scheme_id: Number(committeeForm.time_scheme_id),
-    };
-
     try {
-      setSavingCommittee(true);
-      const created = await createExamDayCommittee(examDayId, payload);
-      setCommittees((prev) => [...prev, created]);
+      setSavingTeam(true);
 
-      setCommitteeForm({
-        committee_id: "",
-        room: "",
-        location: "",
-        time_scheme_id: "",
+      await createExamDayTeam(examDayId, {
+        name: teamForm.name || undefined,
+        time_scheme_id: teamForm.time_scheme_id
+          ? Number(teamForm.time_scheme_id)
+          : undefined,
+        user_ids: userIds,
       });
-      setCommitteeDialogOpen(false);
-    } catch (err) {
-      console.error("Fehler beim Anlegen eines Ausschusses:", err);
-      setCommitteeError(
-        "Der Ausschuss konnte nicht angelegt werden. Bitte IDs prüfen.",
+
+      await reloadTeamsAndSlots();
+      setTeamDialogOpen(false);
+      setTeamForm({ name: "", time_scheme_id: "", user_ids: "" });
+    } catch (err: any) {
+      setTeamError(
+        err?.response?.data?.detail || "Ausschuss konnte nicht angelegt werden."
       );
     } finally {
-      setSavingCommittee(false);
+      setSavingTeam(false);
     }
   };
 
-  const handleGenerateSlots = async (entry: ExamDayCommittee) => {
+  // ------------------------------------------------------
+  // Slots (Team)
+  // ------------------------------------------------------
+  const handleGenerateSlots = async (team: ExamDayTeam) => {
     try {
-      setSlotsGeneratingId(entry.exam_day_committee_id);
-      const res = await generateSlotsForCommittee(entry.exam_day_committee_id);
-      console.log("Slots erzeugt:", res.created_slots);
-
-      // Slots nach Generierung neu laden
-      const updatedSlots = await listExamSlots(examDayId);
-      setSlots(updatedSlots);
-    } catch (err) {
-      console.error("Fehler beim Generieren der Slots:", err);
+      setSlotsBusyTeamId(team.exam_day_team_id);
+      await generateSlotsForTeam(team.exam_day_team_id);
+      await reloadTeamsAndSlots();
     } finally {
-      setSlotsGeneratingId(null);
+      setSlotsBusyTeamId(null);
     }
   };
 
+  const handleDeleteSlots = async (team: ExamDayTeam) => {
+    try {
+      setSlotsBusyTeamId(team.exam_day_team_id);
+      await deleteSlotsForTeam(team.exam_day_team_id);
+      await reloadTeamsAndSlots();
+    } finally {
+      setSlotsBusyTeamId(null);
+    }
+  };
+
+  const handleDeleteTeam = async (team: ExamDayTeam) => {
+    try {
+      setSlotsBusyTeamId(team.exam_day_team_id);
+      await deleteExamDayTeam(team.exam_day_team_id);
+      await reloadTeamsAndSlots();
+    } catch (err) {
+      console.error("Fehler beim Entfernen:", err);
+    } finally {
+      setSlotsBusyTeamId(null);
+    }
+  };
+
+  // ------------------------------------------------------
+  // Candidate assign
+  // ------------------------------------------------------
+  const openAssignDialog = (slot: ExamSlot) => {
+    setAssignSlot(slot);
+    setAssignForm({ candidate_id: "", exam_type: "aevo" });
+    setAssignError(null);
+    setAssignDialogOpen(true);
+  };
+
+  const handleAssignCandidate = async () => {
+    if (!assignSlot || !assignForm.candidate_id) {
+      setAssignError("Bitte Kandidaten-ID angeben.");
+      return;
+    }
+
+    try {
+      setAssignSaving(true);
+      setAssignError(null);
+
+      await createExam({
+        candidate_id: Number(assignForm.candidate_id),
+        exam_day_id: examDayId,
+        exam_slot_id: assignSlot.exam_slot_id,
+        exam_type: assignForm.exam_type,
+      });
+
+      await reloadTeamsAndSlots();
+      setAssignDialogOpen(false);
+      setAssignSlot(null);
+    } catch (err: any) {
+      setAssignError(err?.response?.data?.detail || "Zuweisung fehlgeschlagen.");
+    } finally {
+      setAssignSaving(false);
+    }
+  };
+
+  // ------------------------------------------------------
+  // Render
+  // ------------------------------------------------------
   if (loading) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 text-sm text-muted-foreground">
-        Prüfungstag wird geladen …
+        Lade Prüfungstag …
       </div>
     );
   }
@@ -212,62 +275,9 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     }
   })();
 
-  const formatTime = (t: string) => t?.slice(0, 5) || t;
-
-  const openAssignDialog = (slot: ExamSlot) => {
-    setAssignSlot(slot);
-    setAssignForm({
-      candidate_id: "",
-      exam_type: "aevo",
-    });
-    setAssignError(null);
-    setAssignDialogOpen(true);
-  };
-
-  const handleAssignCandidate = async () => {
-    if (!assignSlot) return;
-
-    if (!assignForm.candidate_id) {
-      setAssignError("Bitte Kandidaten-ID eintragen.");
-      return;
-    }
-
-    try {
-      setAssignSaving(true);
-      setAssignError(null);
-
-      await createExam({
-        candidate_id: Number(assignForm.candidate_id),
-        exam_day_id: examDay.exam_day_id,
-        exam_slot_id: assignSlot.exam_slot_id,
-        exam_type: assignForm.exam_type,
-      });
-
-      // Slots neu laden, damit Status 'booked' angezeigt wird
-      const updatedSlots = await listExamSlots(examDayId);
-      setSlots(updatedSlots);
-
-      setAssignDialogOpen(false);
-      setAssignSlot(null);
-    } catch (err) {
-      console.error("Fehler beim Zuordnen des Kandidaten:", err);
-      setAssignError(
-        "Die Prüfung konnte nicht angelegt werden. Bitte ID prüfen.",
-      );
-    } finally {
-      setAssignSaving(false);
-    }
-  };
-
-  // Slots nach ausgewähltem Ausschuss filtern
-  const filteredSlots =
-    selectedCommitteeId === "all"
-      ? slots
-      : slots.filter((s) => s.committee_id === selectedCommitteeId);
-
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 space-y-6">
-      {/* Kopfbereich Prüfungstag */}
+      {/* Kopfbereich */}
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs text-muted-foreground uppercase tracking-wide">
@@ -289,297 +299,89 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
             )}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            OrgUnit-ID: {examDay.org_unit_id} · Fach-ID: {examDay.subject_id} ·
+            OrgUnit-ID: {examDay.org_unit_id} · Subject-ID: {examDay.subject_id} ·
             Zeitschema-ID: {examDay.time_scheme_id}
           </p>
         </div>
       </div>
 
-      {/* Abschnitt: Ausschüsse */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">Ausschüsse am Prüfungstag</h2>
+      {/* Tabs pro Ausschuss */}
+      <ExamDayTeamsTabs
+        examDayId={examDayId}
+        teams={teams}
+        slots={slots}
+        onAddTeam={() => setTeamDialogOpen(true)}
+        onGenerateSlots={handleGenerateSlots}
+        onDeleteSlots={handleDeleteSlots}
+        onDeleteTeam={handleDeleteTeam}
+        onOpenAssign={openAssignDialog}
+        onNavigateToExam={(examId: number) => navigate(`/exams/${examId}`)}
+        slotsBusyTeamId={slotsBusyTeamId}
+      />
 
-          <Dialog
-            open={committeeDialogOpen}
-            onOpenChange={setCommitteeDialogOpen}
-          >
-            <DialogTrigger asChild>
-              <Button size="sm">+ Ausschuss hinzufügen</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Ausschuss zu Prüfungstag hinzufügen</DialogTitle>
-              </DialogHeader>
+      {/* Dialog: Ausschuss anlegen */}
+      <Dialog open={teamDialogOpen} onOpenChange={setTeamDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Ausschuss anlegen</DialogTitle>
+          </DialogHeader>
 
-              <div className="space-y-3 py-2">
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label htmlFor="committee_id">Ausschuss-ID</Label>
-                    <Input
-                      id="committee_id"
-                      type="number"
-                      value={committeeForm.committee_id}
-                      onChange={handleCommitteeChange("committee_id")}
-                      placeholder="z. B. 1"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <Label htmlFor="time_scheme_id">Zeitschema-ID</Label>
-                    <Input
-                      id="time_scheme_id"
-                      type="number"
-                      value={committeeForm.time_scheme_id}
-                      onChange={handleCommitteeChange("time_scheme_id")}
-                      placeholder="z. B. 1"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label htmlFor="room">Raum</Label>
-                  <Input
-                    id="room"
-                    value={committeeForm.room}
-                    onChange={handleCommitteeChange("room")}
-                    placeholder="z. B. 101"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <Label htmlFor="location">Ort (optional)</Label>
-                  <Input
-                    id="location"
-                    value={committeeForm.location}
-                    onChange={handleCommitteeChange("location")}
-                    placeholder="z. B. IHK Region Stuttgart"
-                  />
-                </div>
-
-                {committeeError && (
-                  <p className="text-sm text-red-600">{committeeError}</p>
-                )}
-              </div>
-
-              <DialogFooter>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCommitteeDialogOpen(false)}
-                  disabled={savingCommittee}
-                >
-                  Abbrechen
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleAddCommittee}
-                  disabled={savingCommittee}
-                >
-                  {savingCommittee ? "Speichern …" : "Speichern"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </div>
-
-        {committees.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Es sind noch keine Ausschüsse für diesen Prüfungstag angelegt.
-          </p>
-        ) : (
-          <div className="overflow-hidden rounded-md border bg-white">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/60">
-                <tr className="text-left">
-                  <th className="border-b px-3 py-2">ID</th>
-                  <th className="border-b px-3 py-2">Ausschuss-ID</th>
-                  <th className="border-b px-3 py-2">Ort</th>
-                  <th className="border-b px-3 py-2">Raum</th>
-                  <th className="border-b px-3 py-2">Zeitschema-ID</th>
-                  <th className="border-b px-3 py-2 text-right">Aktionen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {committees.map((c) => (
-                  <tr
-                    key={c.exam_day_committee_id}
-                    className="hover:bg-muted/40"
-                  >
-                    <td className="border-b px-3 py-2">
-                      {c.exam_day_committee_id}
-                    </td>
-                    <td className="border-b px-3 py-2">{c.committee_id}</td>
-                    <td className="border-b px-3 py-2">
-                      {c.location || (
-                        <span className="text-muted-foreground">–</span>
-                      )}
-                    </td>
-                    <td className="border-b px-3 py-2">
-                      {c.room || (
-                        <span className="text-muted-foreground">–</span>
-                      )}
-                    </td>
-                    <td className="border-b px-3 py-2">
-                      {c.time_scheme_id ?? (
-                        <span className="text-muted-foreground">–</span>
-                      )}
-                    </td>
-                    <td className="border-b px-3 py-2 text-right">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleGenerateSlots(c)}
-                        disabled={
-                          slotsGeneratingId === c.exam_day_committee_id
-                        }
-                      >
-                        {slotsGeneratingId === c.exam_day_committee_id
-                          ? "Slots werden erzeugt…"
-                          : "Slots generieren"}
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Abschnitt: Slots */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">Slots</h2>
-
-          {committees.length > 0 && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>Ausschuss:</span>
-              <Button
-                size="sm"
-                variant={selectedCommitteeId === "all" ? "default" : "outline"}
-                onClick={() => setSelectedCommitteeId("all")}
-                className="h-7 px-3"
-              >
-                Alle
-              </Button>
-              {committees.map((c) => (
-                <Button
-                  key={c.exam_day_committee_id}
-                  size="sm"
-                  variant={
-                    selectedCommitteeId === c.committee_id
-                      ? "default"
-                      : "outline"
-                  }
-                  onClick={() => setSelectedCommitteeId(c.committee_id)}
-                  className="h-7 px-3"
-                >
-                  {c.committee_id}
-                </Button>
-              ))}
+          <div className="space-y-3 py-2">
+            <div className="space-y-1">
+              <Label>Name (optional)</Label>
+              <Input
+                value={teamForm.name}
+                onChange={(e) =>
+                  setTeamForm((p) => ({ ...p, name: e.target.value }))
+                }
+                placeholder="z. B. Ausschuss 1"
+              />
             </div>
-          )}
-        </div>
 
-        {slots.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Es sind noch keine Slots generiert.
-          </p>
-        ) : (
-          <div className="overflow-hidden rounded-md border bg-white">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/60">
-                <tr className="text-left">
-                  <th className="border-b px-3 py-2">ID</th>
-                  <th className="border-b px-3 py-2">Ausschuss-ID</th>
-                  <th className="border-b px-3 py-2">Slot</th>
-                  <th className="border-b px-3 py-2">Zeit</th>
-                  <th className="border-b px-3 py-2">Prüfkandidat</th>
-                  <th className="border-b px-3 py-2">Status</th>
-                  <th className="border-b px-3 py-2 text-right">Aktionen</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredSlots.map((s) => {
-                  const name =
-                    `${s.candidate_last_name ?? ""}, ${s.candidate_first_name ?? ""}`
-                      .replace(/^,|\s,$/, "")
-                      .trim();
+            <div className="space-y-1">
+              <Label>Zeitschema-ID (optional)</Label>
+              <Input
+                type="number"
+                value={teamForm.time_scheme_id}
+                onChange={(e) =>
+                  setTeamForm((p) => ({
+                    ...p,
+                    time_scheme_id: e.target.value,
+                  }))
+                }
+                placeholder="leer = Standard"
+              />
+            </div>
 
-                  return (
-                    <tr key={s.exam_slot_id} className="hover:bg-muted/40">
-                      <td className="border-b px-3 py-2">{s.exam_slot_id}</td>
-                      <td className="border-b px-3 py-2">{s.committee_id}</td>
-                      <td className="border-b px-3 py-2">{s.slot_index}</td>
-                      <td className="border-b px-3 py-2">
-                        {formatTime(s.start_time)} – {formatTime(s.end_time)}
-                      </td>
+            <div className="space-y-1">
+              <Label>Prüfer (User-IDs, Komma-separiert)</Label>
+              <Input
+                placeholder="z. B. 12,34,56"
+                value={teamForm.user_ids}
+                onChange={(e) =>
+                  setTeamForm((p) => ({ ...p, user_ids: e.target.value }))
+                }
+              />
+            </div>
 
-                      {/* 🧑‍🎓 Kandidat */}
-                      <td className="border-b px-3 py-2">
-                        {s.candidate_id ? (
-                          <span>
-                            {name || `Prüfkandidat ${s.candidate_id}`}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">–</span>
-                        )}
-                      </td>
-
-                      <td className="border-b px-3 py-2">
-                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs">
-                          {s.status}
-                        </span>
-                      </td>
-
-                      <td className="border-b px-3 py-2 text-right">
-                        {s.exam_id ? (
-                          <div className="inline-flex gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() => navigate(`/exams/${s.exam_id}`)}
-                            >
-                              Bewerten
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openAssignDialog(s)}
-                            >
-                              Ändern
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={async () => {
-                                if (!s.exam_id) return;
-                                await deleteExam(s.exam_id);
-                                const updated = await listExamSlots(examDayId);
-                                setSlots(updated);
-                              }}
-                            >
-                              Löschen
-                            </Button>
-                          </div>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openAssignDialog(s)}
-                          >
-                            Kandidat zuweisen
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            {teamError && <p className="text-sm text-red-600">{teamError}</p>}
           </div>
-        )}
-      </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setTeamDialogOpen(false)}
+              disabled={savingTeam}
+            >
+              Abbrechen
+            </Button>
+            <Button size="sm" onClick={handleCreateTeam} disabled={savingTeam}>
+              {savingTeam ? "Speichern…" : "Speichern"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog: Kandidat einem Slot zuweisen */}
       <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
@@ -591,9 +393,8 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
           {assignSlot && (
             <div className="space-y-3 py-2 text-sm">
               <p className="text-muted-foreground">
-                Prüfungstag {examDay.exam_day_id} – Slot {assignSlot.slot_index}{" "}
-                ({formatTime(assignSlot.start_time)} –{" "}
-                {formatTime(assignSlot.end_time)})
+                Prüfungstag {examDay.exam_day_id} – Slot {assignSlot.slot_index} (
+                {formatTime(assignSlot.start_time)} – {formatTime(assignSlot.end_time)})
               </p>
 
               <div className="space-y-1">
@@ -632,9 +433,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
                 </Select>
               </div>
 
-              {assignError && (
-                <p className="text-sm text-red-600">{assignError}</p>
-              )}
+              {assignError && <p className="text-sm text-red-600">{assignError}</p>}
             </div>
           )}
 
@@ -660,5 +459,3 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     </div>
   );
 }
-
-// End of file: frontend/src/components/exam/PlannerDetail.tsx

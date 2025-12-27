@@ -150,3 +150,4 @@ def delete_org_unit(org_unit_id: int, db: Session = Depends(get_db)):
     db.add(ou)
     db.commit()
     return {"ok": True}
+# End of file

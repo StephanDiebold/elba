@@ -1,36 +1,31 @@
 // src/lib/httpClient.ts
 import axios from "axios";
 import type { AxiosInstance } from "axios";
-import { api as legacyApi } from "@/lib/api";
 
-const API_BASE =
-  (legacyApi as any)?.API_BASE ?? import.meta.env.VITE_API_BASE_URL ?? "";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 export const http: AxiosInstance = axios.create({
   baseURL: API_BASE,
 });
 
-// 👇 Alias, damit alle neuen Module `httpClient` verwenden können
+// Alias (falls du es im Code so nutzt)
 export const httpClient: AxiosInstance = http;
 
-// Optional: Default-Export, falls du irgendwo `import http from` benutzt
+// Optional Default Export
 export default http;
 
+/**
+ * Token-Handling: komplett ohne Import aus "@/lib/api"
+ * -> wir lesen den Token direkt aus localStorage (oder passe den Key an)
+ */
 http.interceptors.request.use(
-  (config: any) => {
+  (config) => {
     try {
-      const ensureFreshToken = (legacyApi as any).ensureFreshToken as
-        | (() => string | null)
-        | undefined;
-      const getToken = (legacyApi as any).getToken as
-        | (() => string | null)
-        | undefined;
-
-      const token = ensureFreshToken
-        ? ensureFreshToken()
-        : getToken
-        ? getToken()
-        : null;
+      // 🔧 ggf. anpassen: "access_token" / "token" / "elba_access_token"
+      const token =
+        localStorage.getItem("access_token") ??
+        localStorage.getItem("token") ??
+        null;
 
       if (token) {
         config.headers = config.headers ?? {};
@@ -39,20 +34,15 @@ http.interceptors.request.use(
     } catch {
       // ignorieren, Anfrage trotzdem senden
     }
-
     return config;
   },
-  (error: any) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
 http.interceptors.response.use(
-  (response: any) => response,
-  (error: any) => {
+  (response) => response,
+  (error) => {
     // TODO: globales Error-Handling (Toasts etc.)
     return Promise.reject(error);
   }
 );
-
-// Ende von src/lib/httpClient.ts

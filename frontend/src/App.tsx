@@ -25,6 +25,8 @@ import ExamDayDetailPage from "@/pages/ExamDayDetailPage";
 import CandidatesPage from "@/pages/CandidatesPage";
 import ExamGradingPage from "@/pages/ExamGradingPage";
 
+import TimeSchemesPage from "@/pages/admin/TimeSchemesPage";
+
 export default function App() {
   useEffect(() => {
     document.title = "ELBA";
@@ -78,6 +80,8 @@ export default function App() {
                   />
                   <Route path="/admin/roles" element={<RolesAdminPage />}
                   />
+
+                  <Route path="/admin/time-schemes" element={<TimeSchemesPage />} />
 
                   {/* Account */}
                   <Route path="/account" element={<AccountPage />} />
