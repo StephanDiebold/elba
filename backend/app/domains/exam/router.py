@@ -1,8 +1,11 @@
 # app/domains/exam/router.py
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List
+from typing import List, Literal
 
 from sqlalchemy.orm import Session
+
+from sqlalchemy import select
+from datetime import datetime
 
 from app.core.deps import get_db
 from app.domains.auth.auth import get_current_user
@@ -17,6 +20,7 @@ from app.domains.exam.models import (
     ExamGradingItem,
     ExpertDiscussionAreaDefinition,
     ExamExpertDiscussionItem,
+    ExamCheckin,
 )
 from app.domains.exam.schemas import (
     GradingSheetDefinitionOut,
@@ -28,9 +32,13 @@ from app.domains.exam.schemas import (
     GradingCriterionOut,
     GradingCriterionCreate,
     GradingCriterionUpdate,
+    ExamCheckinOut,
+    ExamCheckinUpdate,
     ExamProtocolOut,
     ExamProtocolUpdate,
     ExamPartOut,
+    ExamStartIn,
+    ExamStartOut,
     ExamWithPartsOut,
     FinalSheetOut,
     GradingSheetUpdateIn,
@@ -54,7 +62,6 @@ from app.domains.exam.services.grading_service import (
 from app.domains.exam.services.parts_service import ensure_exam_parts_for_exam
 
 router = APIRouter(prefix="/exam", tags=["exam"])
-
 
 # ---- Grading Sheet Definitions ----
 
@@ -375,15 +382,11 @@ def update_expert_discussion_area(
 
 
 @router.get("/exams/{exam_id}/parts", response_model=ExamWithPartsOut)
-def get_exam_with_parts(
-    exam_id: int,
-    db: Session = Depends(get_db),
-):
+def get_exam_with_parts(exam_id: int, db: Session = Depends(get_db)):
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
 
-    # sicherstellen, dass für AEVO etc. die Teile angelegt sind
     ensure_exam_parts_for_exam(db, exam)
 
     parts = (
@@ -393,12 +396,61 @@ def get_exam_with_parts(
         .all()
     )
 
+    part1 = next((p for p in parts if p.part_number == 1), None)
+
     return ExamWithPartsOut(
         exam_id=exam.exam_id,
         exam_type=exam.exam_type,
         status=exam.status,
+        started_at=getattr(exam, "started_at", None),
+        attendance_status=getattr(exam, "attendance_status", None),
+        part1_mode=(part1.part_mode if part1 else None),
         parts=parts,
     )
+
+@router.get("/exams/{exam_id}/checkin", response_model=ExamCheckinOut)
+def get_exam_checkin(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    checkin = db.query(ExamCheckin).filter(ExamCheckin.exam_id == exam_id).first()
+    if not checkin:
+        checkin = ExamCheckin(exam_id=exam_id)
+        db.add(checkin)
+        db.commit()
+        db.refresh(checkin)
+
+    return checkin
+
+
+@router.put("/exams/{exam_id}/checkin", response_model=ExamCheckinOut)
+def update_exam_checkin(
+    exam_id: int,
+    data: ExamCheckinUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    checkin = db.query(ExamCheckin).filter(ExamCheckin.exam_id == exam_id).first()
+    if not checkin:
+        checkin = ExamCheckin(exam_id=exam_id)
+        db.add(checkin)
+
+    payload = data.model_dump(exclude_unset=True)
+    for field, value in payload.items():
+        setattr(checkin, field, value)
+
+    db.commit()
+    db.refresh(checkin)
+    return checkin
 
 
 @router.get("/exams/{exam_id}/protocol", response_model=ExamProtocolOut)
@@ -688,6 +740,84 @@ def update_final_sheet(
         raise HTTPException(status_code=400, detail=str(e))
 
     return data
+
+@router.post("/exams/{exam_id}/start", response_model=ExamStartOut)
+def start_exam(
+    exam_id: int,
+    payload: ExamStartIn,   # body required
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    try:
+        exam = db.execute(
+            select(Exam).where(Exam.exam_id == exam_id).with_for_update()
+        ).scalar_one_or_none()
+
+        if not exam:
+            raise HTTPException(status_code=404, detail="Exam not found")
+
+        if exam.status in ("done", "canceled"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Exam cannot be started (status={exam.status})."
+            )
+
+        # started_at setzen
+        if exam.started_at is None:
+            exam.started_at = datetime.utcnow()
+
+        # status setzen
+        if exam.status == "planned":
+            exam.status = "in_progress"
+
+        # attendance_status: beim Start default auf present setzen (wenn leer)
+        if exam.attendance_status is None:
+            exam.attendance_status = "present"
+
+        # checkin upsert (idempotent)
+        checkin = db.get(ExamCheckin, exam_id)
+        if checkin is None:
+            db.add(ExamCheckin(exam_id=exam_id))
+
+        # Parts sicherstellen (idempotent)
+        ensure_exam_parts_for_exam(db, exam)
+        db.flush()  # 👈 wichtig, damit newly created parts jetzt sichtbar sind
+
+        # Teil 1 holen
+        part1 = db.execute(
+            select(ExamPart).where(
+                ExamPart.exam_id == exam.exam_id,
+                ExamPart.part_number == 1
+            )
+        ).scalar_one_or_none()
+
+        # part_mode setzen, falls mitgegeben
+        if payload.part1_mode:
+            if part1 is None:
+                raise HTTPException(status_code=500, detail="Part 1 not found after ensure_exam_parts_for_exam")
+            part1.part_mode = payload.part1_mode
+
+        db.commit()
+
+        # neu laden (damit Response garantiert DB-Stand ist)
+        db.refresh(exam)
+        if part1:
+            db.refresh(part1)
+
+        return ExamStartOut(
+            exam_id=exam.exam_id,
+            status=exam.status,
+            started_at=exam.started_at,
+            attendance_status=exam.attendance_status,
+            part1_mode=(part1.part_mode if part1 else None),
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"start_exam failed: {str(e)}")
 
 
 # End of file

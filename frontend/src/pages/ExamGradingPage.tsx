@@ -2,6 +2,9 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import ExamStartPanel from "@/components/exam/ExamStartPanel";
+
 
 // Werte/Funktionen normal importieren
 import {
@@ -19,6 +22,7 @@ import type {
   GradingItemUpdate,
 } from "@/lib/api/exam.api";
 
+
 type RouteParams = {
   examId?: string;
 };
@@ -34,12 +38,14 @@ export default function ExamGradingPage() {
 
   const [selectedPartId, setSelectedPartId] = useState<number | null>(null);
 
-  const [sheet, setSheet] = useState<GradingSheet | null>(null);
-  const [items, setItems] = useState<LocalItem[]>([]);
-  const [loadingSheet, setLoadingSheet] = useState(false);
+  const [sheetByPartId, setSheetByPartId] = useState<Record<number, GradingSheet | null>>({});
+  const [itemsByPartId, setItemsByPartId] = useState<Record<number, LocalItem[]>>({});
+  const [loadingSheetByPartId, setLoadingSheetByPartId] = useState<Record<number, boolean>>({});
+
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+    
   useEffect(() => {
     if (!examIdNum || Number.isNaN(examIdNum)) return;
 
@@ -64,80 +70,84 @@ export default function ExamGradingPage() {
   }, [examIdNum]);
 
   useEffect(() => {
-    if (!selectedPartId) {
-      setSheet(null);
-      setItems([]);
-      return;
-    }
+    if (!selectedPartId) return;
+
+    // schon geladen? dann nicht nochmal laden
+    if (sheetByPartId[selectedPartId]) return;
+    if (loadingSheetByPartId[selectedPartId]) return;
 
     const loadSheet = async () => {
       try {
-        setLoadingSheet(true);
+        setLoadingSheetByPartId((prev) => ({ ...prev, [selectedPartId]: true }));
+
         const s = await fetchMyGradingSheet(selectedPartId);
-        setSheet(s);
-        setItems(
-          (s.items || []).map((it) => ({
-            ...it,
-            _dirty: false,
-          }))
-        );
+
+        setSheetByPartId((prev) => ({ ...prev, [selectedPartId]: s }));
+        setItemsByPartId((prev) => ({
+          ...prev,
+          [selectedPartId]: (s.items || []).map((it) => ({ ...it, _dirty: false })),
+        }));
       } catch (err: any) {
         console.error(err);
         toast.error("Bewertungsbogen konnte nicht geladen werden.");
+        setSheetByPartId((prev) => ({ ...prev, [selectedPartId]: null }));
+        setItemsByPartId((prev) => ({ ...prev, [selectedPartId]: [] }));
       } finally {
-        setLoadingSheet(false);
+        setLoadingSheetByPartId((prev) => ({ ...prev, [selectedPartId]: false }));
       }
     };
 
-    loadSheet();
-  }, [selectedPartId]);
+  loadSheet();
+}, [selectedPartId, sheetByPartId, loadingSheetByPartId]);
+
 
   const handleGradeChange = (itemId: number, value: string) => {
-    setItems((prev) =>
-      prev.map((it) =>
+    if (!selectedPartId) return;
+
+    setItemsByPartId((prev) => ({
+      ...prev,
+      [selectedPartId]: (prev[selectedPartId] || []).map((it) =>
         it.exam_grading_item_id === itemId
-          ? {
-              ...it,
-              grade: value === "" ? null : Number(value),
-              _dirty: true,
-            }
+          ? { ...it, grade: value === "" ? null : Number(value), _dirty: true }
           : it
-      )
-    );
+      ),
+    }));
   };
 
   const handlePointsChange = (itemId: number, value: string) => {
-    setItems((prev) =>
-      prev.map((it) =>
+    if (!selectedPartId) return;
+
+    setItemsByPartId((prev) => ({
+      ...prev,
+      [selectedPartId]: (prev[selectedPartId] || []).map((it) =>
         it.exam_grading_item_id === itemId
-          ? {
-              ...it,
-              points: value === "" ? null : Number(value),
-              _dirty: true,
-            }
+          ? { ...it, points: value === "" ? null : Number(value), _dirty: true }
           : it
-      )
-    );
+      ),
+    }));
   };
 
   const handleCommentChange = (itemId: number, value: string) => {
-    setItems((prev) =>
-      prev.map((it) =>
+    if (!selectedPartId) return;
+
+    setItemsByPartId((prev) => ({
+      ...prev,
+      [selectedPartId]: (prev[selectedPartId] || []).map((it) =>
         it.exam_grading_item_id === itemId
-          ? {
-              ...it,
-              comment: value,
-              _dirty: true,
-            }
+          ? { ...it, comment: value, _dirty: true }
           : it
-      )
-    );
+      ),
+    }));
   };
 
   const handleSave = async () => {
-    if (!sheet) return;
+    if (!selectedPartId) return;
 
-    const changed: GradingItemUpdate[] = items
+    const partSheet = sheetByPartId[selectedPartId] ?? null;
+    const partItems = itemsByPartId[selectedPartId] ?? [];
+    if (!partSheet) return;
+
+    const changed: GradingItemUpdate[] = partItems
       .filter((it) => it._dirty)
       .map((it) => ({
         exam_grading_item_id: it.exam_grading_item_id,
@@ -153,12 +163,13 @@ export default function ExamGradingPage() {
 
     try {
       setSaving(true);
-      await updateGradingSheetItemsApi(sheet.exam_grading_sheet_id, {
-        items: changed,
-      });
+      await updateGradingSheetItemsApi(partSheet.exam_grading_sheet_id, { items: changed });
 
-      // nach erfolgreichem Save Dirty-Flag zurücksetzen
-      setItems((prev) => prev.map((it) => ({ ...it, _dirty: false })));
+      setItemsByPartId((prev) => ({
+        ...prev,
+        [selectedPartId]: (prev[selectedPartId] || []).map((it) => ({ ...it, _dirty: false })),
+      }));
+
       toast.success("Bewertung gespeichert.");
     } catch (err: any) {
       console.error(err);
@@ -169,11 +180,14 @@ export default function ExamGradingPage() {
   };
 
   const handleSubmit = async () => {
-    if (!sheet) return;
+    if (!selectedPartId) return;
+
+    const partSheet = sheetByPartId[selectedPartId] ?? null;
+    if (!partSheet) return;
 
     try {
       setSubmitting(true);
-      const res = await submitMyGradingSheet(sheet.exam_grading_sheet_id);
+      const res = await submitMyGradingSheet(partSheet.exam_grading_sheet_id);
       toast.success(
         res.all_submitted_for_part
           ? "Bewertung eingereicht. Alle Prüfer haben eingereicht."
@@ -186,8 +200,6 @@ export default function ExamGradingPage() {
       setSubmitting(false);
     }
   };
-
-  const hasDirty = items.some((it) => it._dirty);
 
   return (
     <div className="p-6 space-y-6">
@@ -204,153 +216,173 @@ export default function ExamGradingPage() {
         </div>
       </div>
 
+      {/* Start/Check-in */}
+      <ExamStartPanel
+        exam={exam}
+        examId={examIdNum}
+        onChanged={async () => {
+          const data = await fetchExamWithParts(examIdNum);
+          setExam(data);
+        }}
+      />
+
+
       {/* Teile-Auswahl */}
-      <div className="flex flex-wrap gap-3">
+      <div className="w-full">
         {loadingExam && <span>Prüfung wird geladen …</span>}
-        {exam?.parts.map((part) => {
-          const isActive = part.exam_part_id === selectedPartId;
-          return (
-            <button
-              key={part.exam_part_id}
-              type="button"
-              onClick={() => setSelectedPartId(part.exam_part_id)}
-              className={`px-4 py-2 rounded-lg border text-sm ${
-                isActive
-                  ? "bg-blue-600 text-white border-blue-600"
-                  : "bg-white text-gray-800 border-gray-300 hover:bg-gray-50"
-              }`}
-            >
-              Teil {part.part_number}: {part.title}
-              {part.part_mode && (
-                <span className="ml-2 text-xs opacity-80">
-                  ({part.part_mode})
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
 
-      {/* Bewertungsbogen */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-lg">Bewertungsbogen</h2>
-            {sheet && (
-              <p className="text-xs text-gray-500">
-                Sheet #{sheet.exam_grading_sheet_id} · Status: {sheet.status}
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={!sheet || saving || !hasDirty}
-              className="px-3 py-1.5 text-sm rounded-md border border-gray-300 bg-white disabled:opacity-60"
-            >
-              {saving ? "Speichern …" : "Speichern"}
-            </button>
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!sheet || submitting}
-              className="px-4 py-1.5 text-sm rounded-md bg-green-600 text-white disabled:opacity-60"
-            >
-              {submitting ? "Einreichen …" : "Einreichen"}
-            </button>
-          </div>
-        </div>
+        {exam?.parts?.length ? (
+          <Tabs
+            value={selectedPartId ? String(selectedPartId) : undefined}
+            onValueChange={(v) => setSelectedPartId(Number(v))}
+            className="w-full"
+          >
+            <TabsList className="w-full justify-start">
+              {exam.parts.map((part) => (
+                <TabsTrigger key={part.exam_part_id} value={String(part.exam_part_id)}>
+                  Teil {part.part_number}
+                  {part.part_mode ? ` (${part.part_mode})` : ""}
+                </TabsTrigger>
+              ))}
+            </TabsList>
 
-        <div className="p-4">
-          {loadingSheet && <div>Bewertungsbogen wird geladen …</div>}
+            {exam.parts.map((part) => {
+              const isActive = selectedPartId === part.exam_part_id;
+              const partSheet = sheetByPartId[part.exam_part_id] ?? null;
+              const partItems = itemsByPartId[part.exam_part_id] ?? [];
+              const partLoading = !!loadingSheetByPartId[part.exam_part_id];
 
-          {!loadingSheet && !sheet && (
-            <div className="text-sm text-gray-500">
-              Bitte einen Prüfungsteil auswählen.
-            </div>
-          )}
-
-          {!loadingSheet && sheet && (
-            <div className="space-y-3">
-              {items.map((item) => (
-                <div
-                  key={item.exam_grading_item_id}
-                  className="border border-gray-200 rounded-lg p-3 flex flex-col gap-2"
+              const partHasDirty = partItems.some((it) => it._dirty);
+              
+              return (
+                <TabsContent
+                  key={part.exam_part_id}
+                  value={String(part.exam_part_id)}
+                  className="mt-4"
                 >
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-medium">
-                        Kriterium #{item.grading_criterion_definition_id}
+                  {!isActive ? null : (
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+                      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                        <div>
+                          <h2 className="font-semibold text-lg">Bewertungsbogen</h2>
+                          {partSheet && (
+                            <p className="text-xs text-gray-500">
+                              Sheet #{partSheet.exam_grading_sheet_id} · Status: {partSheet.status}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={handleSave}
+                            disabled={!partSheet || saving || !partHasDirty}
+                            className="px-3 py-1.5 text-sm rounded-md border border-gray-300 bg-white disabled:opacity-60"
+                          >
+                            {saving ? "Speichern …" : "Speichern"}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleSubmit}
+                            disabled={!partSheet || submitting}
+                            className="px-4 py-1.5 text-sm rounded-md bg-green-600 text-white disabled:opacity-60"
+                          >
+                            {submitting ? "Einreichen …" : "Einreichen"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="p-4">
+                        {partLoading && <div>Bewertungsbogen wird geladen …</div>}
+
+                        {!partLoading && !partSheet && (
+                          <div className="text-sm text-gray-500">
+                            Für diesen Prüfungsteil ist noch kein Bewertungsbogen vorhanden.
+                          </div>
+                        )}
+
+                        {!partLoading && partSheet && (
+                          <div className="space-y-3">
+                            {partItems.map((item) => (
+                              <div
+                                key={item.exam_grading_item_id}
+                                className="border border-gray-200 rounded-lg p-3 flex flex-col gap-2"
+                              >
+                                <div className="flex items-center justify-between gap-4">
+                                  <div className="text-sm font-medium">
+                                    Kriterium #{item.grading_criterion_definition_id}
+                                  </div>
+                                  {item._dirty && (
+                                    <span className="text-xs text-amber-600">
+                                      geändert, noch nicht gespeichert
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                  <div>
+                                    <label className="block text-xs text-gray-500 mb-1">
+                                      Note (1 – 6, Schritt 0.25)
+                                    </label>
+                                    <input
+                                      type="number"
+                                      step={0.25}
+                                      min={1}
+                                      max={6}
+                                      value={item.grade ?? ""}
+                                      onChange={(e) =>
+                                        handleGradeChange(item.exam_grading_item_id, e.target.value)
+                                      }
+                                      className="w-full border rounded-md px-2 py-1 text-sm"
+                                    />
+                                  </div>
+
+                                  <div>
+                                    <label className="block text-xs text-gray-500 mb-1">Punkte</label>
+                                    <input
+                                      type="number"
+                                      step={0.5}
+                                      value={item.points ?? ""}
+                                      onChange={(e) =>
+                                        handlePointsChange(item.exam_grading_item_id, e.target.value)
+                                      }
+                                      className="w-full border rounded-md px-2 py-1 text-sm"
+                                    />
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <label className="block text-xs text-gray-500 mb-1">Kommentar</label>
+                                  <textarea
+                                    rows={2}
+                                    value={item.comment ?? ""}
+                                    onChange={(e) =>
+                                      handleCommentChange(item.exam_grading_item_id, e.target.value)
+                                    }
+                                    className="w-full border rounded-md px-2 py-1 text-sm"
+                                  />
+                                </div>
+                              </div>
+                            ))}
+
+                            {partItems.length === 0 && (
+                              <div className="text-sm text-gray-500">
+                                Für diesen Prüfungsteil sind noch keine Kriterien hinterlegt.
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
-                    {item._dirty && (
-                      <span className="text-xs text-amber-600">
-                        geändert, noch nicht gespeichert
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">
-                        Note (1 – 6, Schritt 0.25)
-                      </label>
-                      <input
-                        type="number"
-                        step={0.25}
-                        min={1}
-                        max={6}
-                        value={item.grade ?? ""}
-                        onChange={(e) =>
-                          handleGradeChange(item.exam_grading_item_id, e.target.value)
-                        }
-                        className="w-full border rounded-md px-2 py-1 text-sm"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-500 mb-1">
-                        Punkte
-                      </label>
-                      <input
-                        type="number"
-                        step={0.5}
-                        value={item.points ?? ""}
-                        onChange={(e) =>
-                          handlePointsChange(item.exam_grading_item_id, e.target.value)
-                        }
-                        className="w-full border rounded-md px-2 py-1 text-sm"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">
-                      Kommentar
-                    </label>
-                    <textarea
-                      rows={2}
-                      value={item.comment ?? ""}
-                      onChange={(e) =>
-                        handleCommentChange(
-                          item.exam_grading_item_id,
-                          e.target.value
-                        )
-                      }
-                      className="w-full border rounded-md px-2 py-1 text-sm"
-                    />
-                  </div>
-                </div>
-              ))}
-
-              {items.length === 0 && (
-                <div className="text-sm text-gray-500">
-                  Für diesen Prüfungsteil sind noch keine Kriterien hinterlegt.
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+                  )}
+                </TabsContent>
+              );
+            })}
+          </Tabs>
+        ) : (
+          <div className="text-sm text-gray-500">Keine Prüfungsteile vorhanden.</div>
+        )}
       </div>
     </div>
   );

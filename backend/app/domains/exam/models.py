@@ -10,10 +10,11 @@ from sqlalchemy import (
     DECIMAL,
     ForeignKey,
     Boolean,
+    Enum as SAEnum,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
-
+from sqlalchemy.sql import func
 from app.core.database import Base
 
 
@@ -40,8 +41,17 @@ class Exam(Base):
         nullable=True,
     )
     
-    exam_type = Column(String(50), nullable=False, default="aevo")
-    status = Column(String(50), nullable=False, default="planned")
+    exam_type = Column(
+        SAEnum("aevo", "wfw", "it", "custom", name="exam_type_enum"),
+        nullable=False,
+        default="aevo",
+    )
+
+    status = Column(
+        SAEnum("planned", "in_progress", "done", "canceled", "no_show", name="exam_status_enum"),
+        nullable=False,
+        default="planned",
+    )
 
     final_points = Column(DECIMAL(5, 2))
     final_grade = Column(DECIMAL(3, 1))
@@ -68,6 +78,55 @@ class Exam(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+
+    checkin = relationship(
+        "ExamCheckin",
+        back_populates="exam",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+    started_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+
+    attendance_status = Column(
+        SAEnum("present", "no_show_excused", "no_show_unexcused", name="attendance_status_enum"),
+        nullable=True,
+    )
+
+
+# ==========================
+# CHECK-IN (separat, MVP)
+# ==========================
+class ExamCheckin(Base):
+    __tablename__ = "exam_checkin"
+
+    # 1:1 zu Exam, PK ist exam_id
+    exam_id = Column(
+        Integer,
+        ForeignKey("exam.exam_id"),
+        primary_key=True,
+    )
+
+    identity_checked = Column(Boolean, nullable=False, default=False)
+    fit_for_exam_confirmed = Column(Boolean, nullable=False, default=False)
+    conflict_of_interest_cleared = Column(Boolean, nullable=False, default=False)
+    procedure_info_given = Column(Boolean, nullable=False, default=False)
+    phone_notice_given = Column(Boolean, nullable=False, default=False)
+
+    guest_observer_consent = Column(Boolean, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    # Relationship back to exam (optional, aber praktisch)
+    exam = relationship("Exam", back_populates="checkin", uselist=False)
 
 
 # ==========================
@@ -397,16 +456,6 @@ class ExamProtocol(Base):
         nullable=False,
         unique=True,
     )
-
-    identity_checked = Column(Boolean, nullable=False, default=False)
-    exam_ability_asked = Column(Boolean, nullable=False, default=False)
-    bias_cleared = Column(Boolean, nullable=False, default=False)
-    guest_examiner_consent = Column(Boolean, nullable=False, default=False)
-    instructions_given = Column(Boolean, nullable=False, default=False)
-    fraud_notice_given = Column(Boolean, nullable=False, default=False)
-    devices_notice_given = Column(Boolean, nullable=False, default=False)
-
-    precheck_comment = Column(Text, nullable=True)
 
     start_time = Column(DateTime, nullable=True)
     end_time = Column(DateTime, nullable=True)

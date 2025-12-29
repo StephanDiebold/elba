@@ -17,6 +17,8 @@ from app.domains.planner.models import ExamSlot
 from app.domains.candidate.models import Candidate
 from app.domains.admin.models import TimeScheme, TimeSchemeDefault
 
+from app.domains.exam.services.parts_service import ensure_exam_parts_for_exam
+
 router = APIRouter(prefix="/planner", tags=["Planner"])
 
 
@@ -619,61 +621,90 @@ def list_slots_for_exam_day(
 
 @router.post("/exams", response_model=schemas.ExamOut, status_code=status.HTTP_201_CREATED)
 def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
-    # Slot laden
-    slot = db.get(models.ExamSlot, payload.exam_slot_id)
-    if not slot:
-        raise HTTPException(status_code=404, detail="Slot not found")
 
     # Candidate prüfen
     cand = db.get(Candidate, payload.candidate_id)
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
-    # Regel: Kandidat nur einmal pro Team + exam_type
-    existing = (
-        db.query(Exam.exam_id)
-         .join(models.ExamSlot, Exam.exam_slot_id == models.ExamSlot.exam_slot_id)
-         .filter(
-             Exam.candidate_id == payload.candidate_id,
-             models.ExamSlot.exam_day_team_id == slot.exam_day_team_id,
-             Exam.exam_type == payload.exam_type,
- )
-         .first()
-     )
-    if existing:
-        raise HTTPException(
-            status_code=409,
-            detail="Kandidat ist für dieses Team und Prüfungstyp bereits eingeplant.",
+    try:
+        # Slot row-locken (verhindert double booking)
+        slot = db.execute(
+            select(models.ExamSlot)
+            .where(models.ExamSlot.exam_slot_id == payload.exam_slot_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+
+        if not slot:
+            raise HTTPException(status_code=404, detail="Slot not found")
+
+        if slot.exam_day_team_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Slot hat keinen Ausschuss (exam_day_team_id = NULL). "
+                    "Bitte Slots für diesen Ausschuss löschen und neu generieren."
+                ),
+            )
+
+        # Slot-Status prüfen
+        if slot.status not in ("free", "reserved"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Slot ist nicht buchbar (status={slot.status}).",
+            )
+
+        # Slot darf noch kein exam_id haben
+        if slot.exam_id is not None:
+            raise HTTPException(status_code=409, detail="Slot ist bereits mit einer Prüfung verknüpft.")
+
+        # Regel: Kandidat nur einmal pro Team + exam_type
+        existing = (
+            db.query(Exam.exam_id)
+            .join(models.ExamSlot, Exam.exam_slot_id == models.ExamSlot.exam_slot_id)
+            .filter(
+                Exam.candidate_id == payload.candidate_id,
+                models.ExamSlot.exam_day_team_id == slot.exam_day_team_id,
+                Exam.exam_type == payload.exam_type,
+            )
+            .first()
         )
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail="Kandidat ist für dieses Team und Prüfungstyp bereits eingeplant.",
+            )
 
-    slot = db.get(models.ExamSlot, payload.exam_slot_id)
-    if not slot:
-        raise HTTPException(status_code=404, detail="Slot nicht gefunden")
-
-    # 👉 GENAU HIER rein
-    if slot.exam_day_team_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Slot hat keinen Ausschuss (exam_day_team_id = NULL). "
-                "Bitte Slots für diesen Ausschuss löschen und neu generieren."
-            ),
+        # Exam anlegen
+        exam = Exam(
+            candidate_id=payload.candidate_id,
+            exam_day_id=slot.exam_day_id,            # <-- aus Slot ziehen (robuster)
+            exam_slot_id=slot.exam_slot_id,
+            exam_day_team_id=slot.exam_day_team_id,
+            exam_type=payload.exam_type,
+            status="planned",
         )
-    
-    exam = Exam(
-        candidate_id=payload.candidate_id,
-        exam_day_id=payload.exam_day_id,
-        exam_slot_id=payload.exam_slot_id,
-        exam_day_team_id=slot.exam_day_team_id,
-        exam_type=payload.exam_type,
-        status="planned",
-    )
+        db.add(exam)
+        db.flush()  # exam.exam_id verfügbar
 
-    slot.status = "booked"
-    db.add(exam)
-    db.commit()
-    db.refresh(exam)
-    return exam
+        # Slot updaten inkl. exam_id
+        slot.status = "booked"
+        slot.exam_id = exam.exam_id
+
+        # ExamParts sicherstellen (AEVO: Teil 1+2)
+        ensure_exam_parts_for_exam(db, exam)
+
+        db.commit()
+        db.refresh(exam)
+        return exam
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"create_exam failed: {str(e)}")
+
 
 
 @router.delete(

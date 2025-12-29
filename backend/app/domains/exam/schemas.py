@@ -1,5 +1,5 @@
 # app/domains/exam/schemas.py
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import date, datetime
 from pydantic import BaseModel
 
@@ -141,31 +141,11 @@ class ExpertDiscussionAreaOut(ExpertDiscussionAreaBase):
 # ---------- Exam Protocol ----------
 
 class ExamProtocolBase(BaseModel):
-    identity_checked: bool = False
-    exam_ability_asked: bool = False
-    bias_cleared: bool = False
-    guest_examiner_consent: bool = False
-    instructions_given: bool = False
-    fraud_notice_given: bool = False
-    devices_notice_given: bool = False
-
-    precheck_comment: Optional[str] = None
-
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
 
 
 class ExamProtocolUpdate(BaseModel):
-    identity_checked: Optional[bool] = None
-    exam_ability_asked: Optional[bool] = None
-    bias_cleared: Optional[bool] = None
-    guest_examiner_consent: Optional[bool] = None
-    instructions_given: Optional[bool] = None
-    fraud_notice_given: Optional[bool] = None
-    devices_notice_given: Optional[bool] = None
-
-    precheck_comment: Optional[str] = None
-
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
 
@@ -179,6 +159,40 @@ class ExamProtocolOut(ExamProtocolBase):
 
     class Config:
         from_attributes = True
+
+
+# ---------- Exam Check-in ----------
+
+class ExamCheckinBase(BaseModel):
+    identity_checked: bool = False
+    fit_for_exam_confirmed: bool = False
+    conflict_of_interest_cleared: bool = False
+    procedure_info_given: bool = False
+    phone_notice_given: bool = False
+
+    guest_observer_consent: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class ExamCheckinUpdate(BaseModel):
+    identity_checked: Optional[bool] = None
+    fit_for_exam_confirmed: Optional[bool] = None
+    conflict_of_interest_cleared: Optional[bool] = None
+    procedure_info_given: Optional[bool] = None
+    phone_notice_given: Optional[bool] = None
+
+    guest_observer_consent: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class ExamCheckinOut(ExamCheckinBase):
+    exam_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
 
 
 # ---------- Exam Parts für UI ----------
@@ -313,5 +327,57 @@ class FinalCriterionDecisionIn(BaseModel):
 
 class FinalSheetDecisionIn(BaseModel):
     criteria: List[FinalCriterionDecisionIn]
+
+
+class ExamStartOut(BaseModel):
+    exam_id: int
+    status: str
+    started_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+Part1Mode = Literal["presentation", "demonstration"]
+AttendanceStatus = Literal["present", "no_show_excused", "no_show_unexcused"]
+
+class ExamPartOut(BaseModel):
+    exam_part_id: int
+    exam_id: int
+    part_number: int
+    title: str
+    part_mode: Optional[str] = None
+    weight: float
+    status: str
+    points: Optional[float] = None
+    grade: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+class ExamWithPartsOut(BaseModel):
+    exam_id: int
+    exam_type: str
+    status: str
+
+    started_at: Optional[datetime] = None
+    attendance_status: Optional[str] = None
+    part1_mode: Optional[Part1Mode] = None
+
+    parts: List[ExamPartOut]
+
+    class Config:
+        from_attributes = True
+
+class ExamStartIn(BaseModel):
+    part1_mode: Optional[Part1Mode] = None
+
+
+class ExamStartOut(BaseModel):
+    exam_id: int
+    status: str
+    started_at: Optional[datetime] = None
+    attendance_status: Optional[str] = None
+    part1_mode: Optional[str] = None
 
 # End of file

@@ -82,50 +82,87 @@ export interface ExamPart {
   protocol_text?: string | null;
 }
 
-export interface ExamWithParts {
+
+/* ---------- Start / Lifecycle ---------- */
+
+export type Part1Mode = "presentation" | "demonstration";
+
+export interface ExamStartOut {
   exam_id: number;
-  exam_type: ExamType;
   status: string;
-  parts: ExamPart[];
+  started_at: string | null;
+  attendance_status: string | null;
+  part1_mode: Part1Mode | null;
 }
 
-/* ---------- Protokoll (Pre-Check & Zeiten) ---------- */
+/* ---------- Protokoll (Zeiten/Signaturen) ---------- */
 
 export interface ExamProtocol {
   exam_protocol_id: number;
   exam_id: number;
 
-  identity_checked: boolean;
-  exam_ability_asked: boolean;
-  bias_cleared: boolean;
-  guest_examiner_consent: boolean;
-  instructions_given: boolean;
-  fraud_notice_given: boolean;
-  devices_notice_given: boolean;
-
-  precheck_comment?: string | null;
-
   start_time?: string | null; // ISO
-  end_time?: string | null; // ISO
+  end_time?: string | null;   // ISO
 
-  part1_mode?: string | null; // 'presentation' | 'demonstration'
+  signed_by_chair: boolean;
+  signed_by_examiner_2: boolean;
+  signed_by_examiner_3: boolean;
+
+  // kommt bei dir im Router aus part1.part_mode (nicht aus exam_protocol)
+  part1_mode?: Part1Mode | null;
 }
 
 export interface ExamProtocolUpdatePayload {
-  identity_checked?: boolean;
-  exam_ability_asked?: boolean;
-  bias_cleared?: boolean;
-  guest_examiner_consent?: boolean;
-  instructions_given?: boolean;
-  fraud_notice_given?: boolean;
-  devices_notice_given?: boolean;
-
-  precheck_comment?: string | null;
-
   start_time?: string | null;
   end_time?: string | null;
 
-  part1_mode?: string | null;
+  signed_by_chair?: boolean;
+  signed_by_examiner_2?: boolean;
+  signed_by_examiner_3?: boolean;
+
+  // optional, weil dein PUT /protocol part1_mode separat auf exam_part schreibt
+  part1_mode?: Part1Mode | null;
+}
+
+/* ---------- Check-in (MVP) ---------- */
+
+export interface ExamCheckin {
+  exam_id: number;
+
+  identity_checked: boolean;
+  fit_for_exam_confirmed: boolean;
+  conflict_of_interest_cleared: boolean;
+  procedure_info_given: boolean;
+  phone_notice_given: boolean;
+
+  guest_observer_consent?: boolean | null;
+  notes?: string | null;
+
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExamCheckinUpdatePayload {
+  identity_checked?: boolean;
+  fit_for_exam_confirmed?: boolean;
+  conflict_of_interest_cleared?: boolean;
+  procedure_info_given?: boolean;
+  phone_notice_given?: boolean;
+
+  guest_observer_consent?: boolean | null;
+  notes?: string | null;
+}
+
+export interface ExamWithParts {
+  exam_id: number;
+  exam_type: ExamType;
+  status: string;
+
+  started_at?: string | null;
+  attendance_status?: string | null;
+  part1_mode?: Part1Mode | null;
+
+  parts: ExamPart[];
 }
 
 /* ---------- Member-Grading-Sheet ---------- */
@@ -209,11 +246,34 @@ export interface FinalSheet {
 
 /* ---------- API-Funktionen ---------- */
 
-const EXAM_BASE = "/api/exam";
+const EXAM_BASE = "/exam";
+
+/** Check-in holen */
+export async function fetchExamCheckin(examId: number): Promise<ExamCheckin> {
+  return _getJson<ExamCheckin>(`${EXAM_BASE}/exams/${examId}/checkin`);
+}
+
+/** Check-in aktualisieren */
+export async function updateExamCheckin(
+  examId: number,
+  payload: ExamCheckinUpdatePayload
+): Promise<ExamCheckin> {
+  return _putJson<ExamCheckin>(`${EXAM_BASE}/exams/${examId}/checkin`, payload);
+}
 
 /** Exam inkl. automatisch angelegter Parts */
 export async function fetchExamWithParts(examId: number): Promise<ExamWithParts> {
   return _getJson<ExamWithParts>(`${EXAM_BASE}/exams/${examId}/parts`);
+}
+
+/** Prüfung starten (setzt started_at/status; optional part1_mode) */
+export async function startExam(
+  examId: number,
+  part1_mode?: Part1Mode
+): Promise<ExamStartOut> {
+  return _postJson<ExamStartOut>(`${EXAM_BASE}/exams/${examId}/start`, {
+    part1_mode: part1_mode ?? null,
+  });
 }
 
 /** Protokoll holen */
@@ -256,5 +316,6 @@ export async function submitMyGradingSheet(
 export async function fetchFinalGradingSheet(examPartId: number): Promise<FinalSheet> {
   return _getJson<FinalSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`);
 }
+
 
 // End of frontend/src/lib/api/exam.api.ts
