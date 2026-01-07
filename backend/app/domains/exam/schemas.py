@@ -1,10 +1,16 @@
 # app/domains/exam/schemas.py
-from typing import List, Optional, Literal
+
+from __future__ import annotations
+
 from datetime import date, datetime
-from pydantic import BaseModel
+from typing import List, Optional, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
-# ---------- Criterion ----------
+# =============================================================================
+# Grading Sheet Definitions / Areas / Criteria (Admin)
+# =============================================================================
 
 class GradingCriterionBase(BaseModel):
     criterion_number: int
@@ -32,12 +38,8 @@ class GradingCriterionUpdate(BaseModel):
 class GradingCriterionOut(GradingCriterionBase):
     grading_criterion_definition_id: int
     grading_area_id: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        from_attributes = True  # Pydantic v2
-
-
-# ---------- Grading Area (Bewertungsbereich) ----------
 
 class GradingAreaBase(BaseModel):
     area_number: int
@@ -59,13 +61,9 @@ class GradingAreaUpdate(BaseModel):
 
 class GradingAreaOut(GradingAreaBase):
     grading_area_id: int
-    criteria: List[GradingCriterionOut] = []
+    criteria: List[GradingCriterionOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        from_attributes = True
-
-
-# ---------- Grading Sheet Definition ----------
 
 class GradingSheetDefinitionBase(BaseModel):
     subject_id: int
@@ -92,19 +90,13 @@ class GradingSheetDefinitionOut(GradingSheetDefinitionBase):
     grading_sheet_definition_id: int
     created_at: datetime
     updated_at: datetime
-    areas: List[GradingAreaOut] = []
-
-    class Config:
-        from_attributes = True
+    areas: List[GradingAreaOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ---------- Expert Discussion Area Definition ----------
-
-from typing import List, Optional
-from datetime import date, datetime
-from pydantic import BaseModel
-
-# ...
+# =============================================================================
+# Expert Discussion Area Definitions (Fachgespräch-Vorlagen)
+# =============================================================================
 
 class ExpertDiscussionAreaBase(BaseModel):
     code: Optional[str] = None
@@ -116,7 +108,8 @@ class ExpertDiscussionAreaBase(BaseModel):
 
 
 class ExpertDiscussionAreaCreate(ExpertDiscussionAreaBase):
-    pass  # subject_id kommt aus dem Pfad (subjects/{subject_id})
+    # subject_id kommt aus dem Pfad (subjects/{subject_id})
+    pass
 
 
 class ExpertDiscussionAreaUpdate(BaseModel):
@@ -133,35 +126,33 @@ class ExpertDiscussionAreaOut(ExpertDiscussionAreaBase):
     subject_id: int
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ---------- Exam Protocol ----------
+# =============================================================================
+# Exam Protocol
+# =============================================================================
 
 class ExamProtocolBase(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
 
 
-class ExamProtocolUpdate(BaseModel):
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-
-    part1_mode: Optional[str] = None  # 'presentation' | 'demonstration'
+class ExamProtocolUpdate(ExamProtocolBase):
+    # wird in router separat behandelt/gespeichert über ExamPart.part_mode
+    part1_mode: Optional[str] = None  # "presentation" | "demonstration"
 
 
 class ExamProtocolOut(ExamProtocolBase):
     exam_protocol_id: int
     exam_id: int
     part1_mode: Optional[str] = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ---------- Exam Check-in ----------
+# =============================================================================
+# Exam Check-in
+# =============================================================================
 
 class ExamCheckinBase(BaseModel):
     identity_checked: bool = False
@@ -189,13 +180,16 @@ class ExamCheckinOut(ExamCheckinBase):
     exam_id: int
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
+# =============================================================================
+# Exam Parts / Exam With Parts (für UI)
+# =============================================================================
 
-# ---------- Exam Parts für UI ----------
+Part1Mode = Literal["presentation", "demonstration"]
+AttendanceStatus = Literal["present", "no_show_excused", "no_show_unexcused"]
+
 
 class ExamPartOut(BaseModel):
     exam_part_id: int
@@ -205,40 +199,41 @@ class ExamPartOut(BaseModel):
     part_mode: Optional[str] = None
     weight: float
     status: str
-    points: Optional[int] = None
+    points: Optional[float] = None
     grade: Optional[float] = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExamWithPartsOut(BaseModel):
     exam_id: int
     exam_type: str
     status: str
-    parts: List[ExamPartOut]
+
+    started_at: Optional[datetime] = None
+    attendance_status: Optional[str] = None
+    part1_mode: Optional[Part1Mode] = None
+
+    parts: List[ExamPartOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ---------- Expert Discussion Items (Fachgespräch) ----------
+# =============================================================================
+# Expert Discussion Items (Fachgespräch / Protokollzeilen)
+# =============================================================================
 
 class ExpertDiscussionItemBase(BaseModel):
-    # optional Verknüpfung auf eine definierte Area (Dropdown)
     expert_discussion_area_definition_id: Optional[int] = None
-
-    # immer gespeicherter Titel (auch wenn Definition später geändert/gelöscht wird)
     area_title: str
 
     candidate_statement: Optional[str] = None
     examiner_comment: Optional[str] = None
 
-    grade: Optional[float] = None   # Note in Viertelschritten
-    points: Optional[float] = None  # optional, berechnet
+    grade: Optional[float] = None
+    points: Optional[float] = None
 
 
 class ExpertDiscussionItemCreate(ExpertDiscussionItemBase):
-    """
-    exam_part_id kommt aus dem Pfad (exam-parts/{exam_part_id}).
-    """
+    # exam_part_id kommt aus dem Pfad
     pass
 
 
@@ -256,12 +251,77 @@ class ExpertDiscussionItemOut(ExpertDiscussionItemBase):
     exam_part_id: int
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ---------- Final Sheet ----------
+# =============================================================================
+# Member Grading Sheet (raw)
+# =============================================================================
+
+class MemberGradingItemOut(BaseModel):
+    exam_grading_item_id: int
+    exam_grading_sheet_id: int
+    grading_criterion_definition_id: int
+    grade: Optional[float] = None
+    points: Optional[float] = None
+    comment: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MemberGradingSheetOut(BaseModel):
+    exam_grading_sheet_id: int
+    exam_part_id: int
+    examiner_id: int
+    sheet_type: str
+    status: str
+    items: List[MemberGradingItemOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =============================================================================
+# Member Grading Sheet VIEW (grouped by grading_area)
+# =============================================================================
+
+class MemberCriterionItemOut(BaseModel):
+    exam_grading_item_id: int
+    grading_criterion_definition_id: int
+
+    criterion_number: int
+    criterion_title: str
+    criterion_description: Optional[str] = None
+    max_points: int
+
+    grade: Optional[float] = None
+    points: Optional[float] = None
+    comment: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MemberAreaOut(BaseModel):
+    grading_area_id: int
+    area_number: int
+    title: str
+    description: Optional[str] = None
+
+    criteria: List[MemberCriterionItemOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MemberGradingSheetViewOut(BaseModel):
+    exam_grading_sheet_id: int
+    exam_part_id: int
+    examiner_id: int
+    sheet_type: str
+    status: str
+
+    areas: List[MemberAreaOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =============================================================================
+# Final Sheet (Ausschuss)
+# =============================================================================
 
 class MemberRatingOut(BaseModel):
     examiner_id: int
@@ -272,13 +332,13 @@ class MemberRatingOut(BaseModel):
 
 
 class FinalCriterionOut(BaseModel):
-    criterion_id: int
+    criterion_id: int  # == grading_criterion_definition_id
     criterion_number: int
     title: str
     description: Optional[str] = None
     max_points: int
 
-    member_ratings: List[MemberRatingOut]
+    member_ratings: List[MemberRatingOut] = Field(default_factory=list)
 
     suggested_points: Optional[float] = None
     suggested_grade: Optional[float] = None
@@ -289,7 +349,7 @@ class FinalCriterionOut(BaseModel):
 
     max_grade_diff: Optional[float] = None
     max_points_diff: Optional[float] = None
-    has_conflict: bool
+    has_conflict: bool = False
 
 
 class FinalSheetOut(BaseModel):
@@ -299,10 +359,12 @@ class FinalSheetOut(BaseModel):
     title: str
     status: str
     final_sheet_id: Optional[int] = None
-    criteria: List[FinalCriterionOut]
+    criteria: List[FinalCriterionOut] = Field(default_factory=list)
 
 
-# ---------- Updates ----------
+# =============================================================================
+# Updates (Member Sheet + Final Decisions)
+# =============================================================================
 
 class GradingItemUpdateIn(BaseModel):
     exam_grading_item_id: int
@@ -312,13 +374,11 @@ class GradingItemUpdateIn(BaseModel):
 
 
 class GradingSheetUpdateIn(BaseModel):
-    items: List[GradingItemUpdateIn]
+    items: List[GradingItemUpdateIn] = Field(default_factory=list)
 
 
 class FinalCriterionDecisionIn(BaseModel):
-    """
-    criterion_id == grading_criterion_definition_id
-    """
+    # criterion_id == grading_criterion_definition_id
     criterion_id: int
     decided_points: Optional[float] = None
     decided_grade: Optional[float] = None
@@ -326,48 +386,12 @@ class FinalCriterionDecisionIn(BaseModel):
 
 
 class FinalSheetDecisionIn(BaseModel):
-    criteria: List[FinalCriterionDecisionIn]
+    criteria: List[FinalCriterionDecisionIn] = Field(default_factory=list)
 
 
-class ExamStartOut(BaseModel):
-    exam_id: int
-    status: str
-    started_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-Part1Mode = Literal["presentation", "demonstration"]
-AttendanceStatus = Literal["present", "no_show_excused", "no_show_unexcused"]
-
-class ExamPartOut(BaseModel):
-    exam_part_id: int
-    exam_id: int
-    part_number: int
-    title: str
-    part_mode: Optional[str] = None
-    weight: float
-    status: str
-    points: Optional[float] = None
-    grade: Optional[float] = None
-
-    class Config:
-        from_attributes = True
-
-class ExamWithPartsOut(BaseModel):
-    exam_id: int
-    exam_type: str
-    status: str
-
-    started_at: Optional[datetime] = None
-    attendance_status: Optional[str] = None
-    part1_mode: Optional[Part1Mode] = None
-
-    parts: List[ExamPartOut]
-
-    class Config:
-        from_attributes = True
+# =============================================================================
+# Exam Start
+# =============================================================================
 
 class ExamStartIn(BaseModel):
     part1_mode: Optional[Part1Mode] = None
@@ -379,5 +403,7 @@ class ExamStartOut(BaseModel):
     started_at: Optional[datetime] = None
     attendance_status: Optional[str] = None
     part1_mode: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
 
 # End of file

@@ -7,8 +7,8 @@ from typing import List, Dict, Optional, Tuple
 from statistics import mean
 
 from fastapi import HTTPException, status
-from sqlalchemy.orm import Session, joinedload
 from collections import defaultdict
+from sqlalchemy.orm import Session, joinedload
 
 from app.domains.exam.models import (
     Exam,
@@ -17,35 +17,190 @@ from app.domains.exam.models import (
     ExamGradingItem,
     GradingSheetDefinition,
     GradingCriterionDefinition,
+    GradingArea,
+    GradeKeyVersion,
+    GradeKeyEntry,
 )
 
 from app.domains.exam.schemas import (
     FinalSheetOut,
     FinalCriterionOut,
     MemberRatingOut,
+    MemberGradingSheetViewOut,
+    MemberAreaOut,
     MemberCriterionItemOut,
     GradingSheetUpdateIn,
     FinalSheetDecisionIn,
-    FinalCriterionDecisionIn,
-    MemberAreaOut,
-    MemberGradingSheetViewOut,
 )
 
 from app.domains.auth.models import User  # ggf. Pfad anpassen
 
 
-# --------- Hilfsfunktionen ---------
+# ============================================================
+# Grade Key (IHK) Helpers
+# ============================================================
+
+def _round_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return value
+    return round(value / step) * step
+
+
+def _validate_grade_step_025(grade: float) -> None:
+    q = round(grade / 0.25)
+    if abs(grade - (q * 0.25)) > 1e-9:
+        raise ValueError(f"grade step invalid: {grade} (expected step 0.25)")
+
+
+def _resolve_subject_id(exam: Exam) -> Optional[int]:
+    """
+    Prefer exam.subject_id if available.
+    Fallback to exam_type mapping (MVP).
+    """
+    sid = getattr(exam, "subject_id", None)
+    if sid is not None:
+        try:
+            return int(sid)
+        except Exception:
+            pass
+    return _get_subject_id_for_exam_type(exam.exam_type)
 
 
 def _get_subject_id_for_exam_type(exam_type: str) -> Optional[int]:
     """Hardcoded Mapping exam_type -> subject_id (für AEVO etc.)."""
     mapping = {
-        "aevo": 1,  # <- ID deines AEVO-Subjects in der DB
+        "aevo": 1,  # AEVO subject_id
         # "wfw": 2,
         # "it":  3,
     }
     return mapping.get(exam_type)
 
+
+def _get_active_grade_key_version_id(db: Session, subject_id: int) -> int:
+    """
+    Finds active grade_key_version for subject.
+    Simplified: pick latest active by valid_from/version.
+    """
+    v = (
+        db.query(GradeKeyVersion)
+        .filter(
+            GradeKeyVersion.subject_id == subject_id,
+            GradeKeyVersion.is_active == True,  # noqa: E712
+        )
+        .order_by(GradeKeyVersion.valid_from.desc(), GradeKeyVersion.version_no.desc())
+        .first()
+    )
+    if not v:
+        raise ValueError(f"No active grade_key_version for subject_id={subject_id}")
+    return int(v.grade_key_version_id)
+
+
+def _load_midpoints_by_grade(db: Session, subject_id: int) -> Dict[float, float]:
+    """
+    Midpoint per grade_decimal:
+      midpoint = (min(points_100) + max(points_100)) / 2
+    """
+    version_id = _get_active_grade_key_version_id(db, subject_id)
+
+    rows = (
+        db.query(
+            GradeKeyEntry.grade_decimal,
+            # min/max points_100
+        )
+        .filter(GradeKeyEntry.grade_key_version_id == version_id)
+        .all()
+    )
+
+    if not rows:
+        raise ValueError(f"No grade_key_entry rows for grade_key_version_id={version_id}")
+
+    # We do min/max per grade_decimal in python (fast enough for ~101 rows)
+    tmp: Dict[float, List[int]] = {}
+    for r in rows:
+        gd = float(r.grade_decimal)
+        tmp.setdefault(gd, []).append(int(r.points_100))
+
+    midpoints: Dict[float, float] = {}
+    for gd, points_list in tmp.items():
+        midpoints[gd] = (min(points_list) + max(points_list)) / 2.0
+
+    return midpoints
+
+
+def _interpolate_linear(x: float, x0: float, y0: float, x1: float, y1: float) -> float:
+    if x1 == x0:
+        return y0
+    t = (x - x0) / (x1 - x0)
+    return y0 + t * (y1 - y0)
+
+
+def _grade_to_p100(db: Session, subject_id: int, grade: float) -> float:
+    """
+    Returns p100 via:
+      - Midpoints per grade_decimal (0.1 steps)
+      - Linear interpolation for 0.25/0.5 steps
+    """
+    g = float(grade)
+    # clamp
+    if g < 1.0:
+        g = 1.0
+    if g > 6.0:
+        g = 6.0
+
+    _validate_grade_step_025(g)
+
+    midpoints = _load_midpoints_by_grade(db, subject_id)
+    grades_sorted = sorted(midpoints.keys())
+
+    # exact
+    if g in midpoints:
+        return float(midpoints[g])
+
+    # clamp to ends
+    if g <= grades_sorted[0]:
+        return float(midpoints[grades_sorted[0]])
+    if g >= grades_sorted[-1]:
+        return float(midpoints[grades_sorted[-1]])
+
+    # find neighbors
+    for i in range(len(grades_sorted) - 1):
+        g0 = grades_sorted[i]
+        g1 = grades_sorted[i + 1]
+        if g0 <= g <= g1:
+            return float(_interpolate_linear(g, g0, midpoints[g0], g1, midpoints[g1]))
+
+    raise RuntimeError(f"Interpolation failed for grade={g}")
+
+
+def _compute_points_from_grade_ihk(
+    db: Session,
+    subject_id: int,
+    max_points: int,
+    grade: Optional[float],
+    round_step: float = 0.5,
+) -> Optional[Decimal]:
+    """
+    IHK mapping:
+      grade -> p100 (midpoint + interpolation)
+      item_points = p100/100 * max_points
+      rounding: 0.5
+    """
+    if grade is None:
+        return None
+
+    try:
+        p100 = _grade_to_p100(db, subject_id, float(grade))
+        raw = (p100 / 100.0) * float(max_points)
+        pts = _round_to_step(raw, round_step)
+        return Decimal(str(pts))
+    except Exception:
+        # MVP: robust statt Crash
+        return None
+
+
+# ============================================================
+# Sheet Definition Lookup
+# ============================================================
 
 def _get_active_sheet_definition_for_part(
     db: Session, exam: Exam, part: ExamPart
@@ -55,7 +210,7 @@ def _get_active_sheet_definition_for_part(
     Aktuell: 1 aktives Template je Subject + part_number.
     Später kann hier z.B. part_mode (presentation/demonstration) berücksichtigt werden.
     """
-    subject_id = _get_subject_id_for_exam_type(exam.exam_type)
+    subject_id = _resolve_subject_id(exam)
     if subject_id is None:
         raise ValueError(f"Kein subject_id für exam_type {exam.exam_type} definiert")
 
@@ -77,31 +232,9 @@ def _get_active_sheet_definition_for_part(
     return sheet_def
 
 
-def _compute_points_from_grade(max_points: int, grade: Optional[float]) -> Optional[Decimal]:
-    """
-    Einfache lineare Abbildung Note -> Punkte.
-    1.0 => 100%, 6.0 => 0%
-    """
-    if grade is None:
-        return None
-    try:
-        g = float(grade)
-    except (TypeError, ValueError):
-        return None
-
-    # Klammern
-    if g < 1.0:
-        g = 1.0
-    if g > 6.0:
-        g = 6.0
-
-    factor = 1.0 - (g - 1.0) / 5.0  # zwischen 1 und 6
-    points = max_points * factor
-    return Decimal(round(points, 2))
-
-
-# --------- Member-Sheets (einzelne Prüfer) ---------
-
+# ============================================================
+# Member-Sheets (einzelne Prüfer)
+# ============================================================
 
 def get_or_create_member_sheet(
     db: Session,
@@ -149,7 +282,7 @@ def get_or_create_member_sheet(
         total_grade=None,
     )
     db.add(sheet)
-    db.flush()  # damit sheet_id vorhanden ist
+    db.flush()  # sheet_id verfügbar
 
     # Items nach Definition anlegen
     crit_defs: List[GradingCriterionDefinition] = (
@@ -185,10 +318,18 @@ def update_grading_sheet_items(
     """
     Aktualisiert Punkte/Noten/Kommentare im Sheet und berechnet total_points/total_grade neu.
     items_data: Liste aus {exam_grading_item_id, grade?, points?, comment?}
+
+    Regel:
+    - Wenn grade gesetzt und points NICHT gesetzt: Punkte werden aus IHK grade_key berechnet (pro Item mit max_points)
+    - Wenn points explizit gesendet: dann wird es übernommen (kann man später sperren)
     """
     sheet: ExamGradingSheet = (
         db.query(ExamGradingSheet)
-        .options(joinedload(ExamGradingSheet.items).joinedload(ExamGradingItem.criterion))
+        .options(
+            joinedload(ExamGradingSheet.items).joinedload(ExamGradingItem.criterion),
+            # wir brauchen subject_id -> exam_type/subject_id
+            joinedload(ExamGradingSheet.exam_part).joinedload(ExamPart.exam),
+        )
         .filter(ExamGradingSheet.exam_grading_sheet_id == sheet_id)
         .first()
     )
@@ -197,6 +338,12 @@ def update_grading_sheet_items(
 
     if sheet.status == "locked":
         raise ValueError("Sheet is locked and cannot be changed")
+
+    # subject_id bestimmen
+    exam = sheet.exam_part.exam
+    subject_id = _resolve_subject_id(exam)
+    if subject_id is None:
+        raise ValueError(f"No subject_id resolvable for exam_type={exam.exam_type}")
 
     items_by_id: Dict[int, ExamGradingItem] = {
         it.exam_grading_item_id: it for it in sheet.items
@@ -215,11 +362,18 @@ def update_grading_sheet_items(
         if grade is not None:
             item.grade = Decimal(str(grade))
 
-            # falls Punkte nicht explizit gesendet wurden: Vorschlag berechnen
+            # Punkte berechnen, wenn nicht explizit gesetzt
             if points is None:
-                max_points = item.criterion.max_points
-                points_suggested = _compute_points_from_grade(max_points, float(grade))
-                item.points = points_suggested
+                max_points = int(item.criterion.max_points)
+                pts = _compute_points_from_grade_ihk(
+                    db=db,
+                    subject_id=subject_id,
+                    max_points=max_points,
+                    grade=float(grade),
+                    round_step=0.5,
+                )
+                item.points = pts
+
         if points is not None:
             item.points = Decimal(str(points))
 
@@ -228,12 +382,8 @@ def update_grading_sheet_items(
 
     # totals neu berechnen
     valid_points = [it.points for it in sheet.items if it.points is not None]
-    if valid_points:
-        total_points = sum(valid_points)
-    else:
-        total_points = Decimal("0.0")
+    total_points = sum(valid_points) if valid_points else Decimal("0.0")
 
-    # Durchschnittsnote über alle Kriterien (optional)
     valid_grades = [it.grade for it in sheet.items if it.grade is not None]
     avg_grade: Optional[Decimal] = (
         Decimal(str(round(mean([float(g) for g in valid_grades]), 2)))
@@ -308,9 +458,11 @@ def submit_member_sheet(
     Gibt zurück:
       (sheet, all_submitted_for_part)
     """
-    sheet: ExamGradingSheet = db.query(ExamGradingSheet).filter(
-        ExamGradingSheet.exam_grading_sheet_id == sheet_id
-    ).first()
+    sheet: ExamGradingSheet = (
+        db.query(ExamGradingSheet)
+        .filter(ExamGradingSheet.exam_grading_sheet_id == sheet_id)
+        .first()
+    )
     if not sheet:
         raise ValueError("ExamGradingSheet not found")
 
@@ -324,7 +476,6 @@ def submit_member_sheet(
     db.commit()
     db.refresh(sheet)
 
-    # prüfen, ob alle member-Sheets für diesen Teil submitted sind
     part_id = sheet.exam_part_id
     q = db.query(ExamGradingSheet).filter(
         ExamGradingSheet.exam_part_id == part_id,
@@ -334,9 +485,88 @@ def submit_member_sheet(
     all_submitted = bool(statuses) and all(st == "submitted" for st in statuses)
     return sheet, all_submitted
 
+    def get_member_sheet_view(
+        db,
+        exam_part_id: int,
+        examiner_id: int,
+    ) -> MemberGradingSheetViewOut:
+        # 1) Sheet holen/erzeugen (wie bisher)
+        sheet = get_or_create_member_sheet(db=db, exam_part_id=exam_part_id, examiner_id=examiner_id)
 
-# --------- Final Sheet (Ausschuss-Bogen) ---------
+        # 2) Sheet + Items + Criterion + Area laden
+        sheet = (
+            db.query(ExamGradingSheet)
+            .options(
+                joinedload(ExamGradingSheet.items)
+                .joinedload(ExamGradingItem.criterion)
+                .joinedload(GradingCriterionDefinition.area)
+            )
+            .filter(ExamGradingSheet.exam_grading_sheet_id == sheet.exam_grading_sheet_id)
+            .one()
+        )
 
+        # 3) Group by area
+        grouped = defaultdict(list)
+
+        for it in sheet.items:
+            cd = it.criterion  # GradingCriterionDefinition
+            area = cd.area     # GradingArea (kann theoretisch None sein)
+
+            area_id = area.grading_area_id if area else 0
+            grouped[area_id].append((area, it, cd))
+
+        # 4) sort: areas by area_number, criteria by criterion_number
+        def area_sort_key(area_id: int):
+            area = grouped[area_id][0][0]
+            if area is None:
+                return (9999, 9999)
+            return (area.area_number or 9999, area.grading_area_id)
+
+        areas_out = []
+        for area_id in sorted(grouped.keys(), key=area_sort_key):
+            area = grouped[area_id][0][0]
+
+            crit_rows = grouped[area_id]
+            crit_rows.sort(key=lambda r: (r[2].criterion_number or 9999, r[2].grading_criterion_definition_id))
+
+            criteria_out = []
+            for _, it, cd in crit_rows:
+                criteria_out.append(
+                    MemberCriterionItemOut(
+                        exam_grading_item_id=it.exam_grading_item_id,
+                        grading_criterion_definition_id=cd.grading_criterion_definition_id,
+                        criterion_number=cd.criterion_number,
+                        criterion_title=cd.title,
+                        criterion_description=cd.description,
+                        max_points=cd.max_points,
+                        grade=float(it.grade) if it.grade is not None else None,
+                        points=float(it.points) if it.points is not None else None,
+                        comment=it.comment,
+                    )
+                )
+
+            areas_out.append(
+                MemberAreaOut(
+                    grading_area_id=area.grading_area_id if area else 0,
+                    area_number=area.area_number if area else 9999,
+                    title=area.title if area else "Ohne Bereich",
+                    description=area.description if area else None,
+                    criteria=criteria_out,
+                )
+            )
+
+        return MemberGradingSheetViewOut(
+            exam_grading_sheet_id=sheet.exam_grading_sheet_id,
+            exam_part_id=sheet.exam_part_id,
+            examiner_id=sheet.examiner_id,
+            sheet_type=sheet.sheet_type,
+            status=sheet.status,
+            areas=areas_out,
+        )
+
+# ============================================================
+# Final Sheet (Ausschuss-Bogen)
+# ============================================================
 
 class FinalCriterionView:
     def __init__(
@@ -373,7 +603,6 @@ class FinalCriterionView:
             if r.points is not None
         ]
 
-        # vorgeschlagene Punkte/Note
         if points:
             self.suggested_points = Decimal(
                 str(round(mean([float(p) for p in points]), 2))
@@ -383,7 +612,6 @@ class FinalCriterionView:
                 str(round(mean([float(g) for g in grades]), 2))
             )
 
-        # Differenzen
         if grades:
             min_g, max_g = min(grades), max(grades)
             self.max_grade_diff = Decimal(str(round(float(max_g - min_g), 2)))
@@ -395,7 +623,6 @@ class FinalCriterionView:
         if self.max_grade_diff is not None and float(self.max_grade_diff) > 1.0:
             self.has_conflict = True
 
-        # beschlossene Werte: aus final-Item, sonst Vorschlag
         if self.decided_item:
             self.decided_points = self.decided_item.points
             self.decided_grade = self.decided_item.grade
@@ -403,7 +630,7 @@ class FinalCriterionView:
         else:
             self.decided_points = self.suggested_points
             self.decided_grade = self.suggested_grade
-            # default combined_comment: alle Einzelkommentare untereinander
+
             comments = [
                 f"{r.examiner_name}: {r.comment}"
                 for r in self.member_ratings
@@ -432,7 +659,6 @@ def build_final_sheet_view(
     exam: Exam = part.exam
     sheet_def = _get_active_sheet_definition_for_part(db, exam, part)
 
-    # alle Kriterien
     crit_defs: List[GradingCriterionDefinition] = (
         db.query(GradingCriterionDefinition)
         .filter(
@@ -443,7 +669,6 @@ def build_final_sheet_view(
         .all()
     )
 
-    # member-Sheets + Items
     member_sheets: List[ExamGradingSheet] = (
         db.query(ExamGradingSheet)
         .options(
@@ -459,7 +684,6 @@ def build_final_sheet_view(
         .all()
     )
 
-    # final-Sheet (falls schon existiert)
     final_sheet: Optional[ExamGradingSheet] = (
         db.query(ExamGradingSheet)
         .options(joinedload(ExamGradingSheet.items))
@@ -478,7 +702,6 @@ def build_final_sheet_view(
     final_criteria_out: List[FinalCriterionOut] = []
 
     for cd in crit_defs:
-        # member_ratings pro Kriterium sammeln
         member_ratings: List[MemberRatingOut] = []
 
         for sheet in member_sheets:
@@ -524,9 +747,7 @@ def build_final_sheet_view(
                 )
             )
 
-        decided_item = decided_by_criterion.get(
-            cd.grading_criterion_definition_id
-        )
+        decided_item = decided_by_criterion.get(cd.grading_criterion_definition_id)
         view = FinalCriterionView(
             criterion=cd,
             member_ratings=member_ratings,
@@ -574,17 +795,16 @@ def build_final_sheet_view(
         criteria=final_criteria_out,
     )
 
+
 def save_final_sheet_decisions(
     db: Session,
     exam_part_id: int,
     decisions: FinalSheetDecisionIn,
 ) -> ExamGradingSheet:
     """
-    Legt den finalen Ausschuss-Bogen (sheet_type='final') für einen Prüfungsteil an
-    oder aktualisiert ihn und schreibt die beschlossenen Punkte/Noten/Kommentare
-    pro Kriterium hinein.
+    Legt den finalen Ausschuss-Bogen (sheet_type='final') an
+    oder aktualisiert ihn und schreibt die beschlossenen Punkte/Noten/Kommentare.
     """
-    # Prüfungsteil + zugehörige Prüfung holen
     part: ExamPart = (
         db.query(ExamPart)
         .options(joinedload(ExamPart.exam))
@@ -597,8 +817,7 @@ def save_final_sheet_decisions(
     exam: Exam = part.exam
     sheet_def = _get_active_sheet_definition_for_part(db, exam, part)
 
-    # Final-Sheet holen oder neu anlegen
-    final_sheet: ExamGradingSheet = (
+    final_sheet: Optional[ExamGradingSheet] = (
         db.query(ExamGradingSheet)
         .options(joinedload(ExamGradingSheet.items))
         .filter(
@@ -612,16 +831,15 @@ def save_final_sheet_decisions(
         final_sheet = ExamGradingSheet(
             exam_part_id=exam_part_id,
             grading_sheet_definition_id=sheet_def.grading_sheet_definition_id,
-            examiner_id=None,  # Ausschuss als Ganzes
+            examiner_id=None,
             sheet_type="final",
             status="draft",
             total_points=None,
             total_grade=None,
         )
         db.add(final_sheet)
-        db.flush()  # sheet_id verfügbar machen
+        db.flush()
 
-    # Sicherstellen, dass für alle Kriterien Items im final sheet existieren
     crit_defs: List[GradingCriterionDefinition] = (
         db.query(GradingCriterionDefinition)
         .filter(
@@ -636,7 +854,6 @@ def save_final_sheet_decisions(
         it.grading_criterion_definition_id: it for it in final_sheet.items
     }
 
-    # ggf. fehlende Items anlegen
     for cd in crit_defs:
         if cd.grading_criterion_definition_id not in items_by_criterion:
             item = ExamGradingItem(
@@ -650,12 +867,9 @@ def save_final_sheet_decisions(
             db.flush()
             items_by_criterion[cd.grading_criterion_definition_id] = item
 
-    # Entscheidungen anwenden
     for c in decisions.criteria:
-        crit_id = c.criterion_id
-        item = items_by_criterion.get(crit_id)
+        item = items_by_criterion.get(c.criterion_id)
         if not item:
-            # Falls jemand eine Criterion-ID sendet, die es in diesem Bogen nicht gibt – ignorieren
             continue
 
         if c.decided_points is not None:
@@ -667,12 +881,8 @@ def save_final_sheet_decisions(
         if c.combined_comment is not None:
             item.comment = c.combined_comment
 
-    # Totals neu berechnen
     valid_points = [it.points for it in items_by_criterion.values() if it.points is not None]
-    if valid_points:
-        total_points = sum(valid_points)
-    else:
-        total_points = None
+    total_points = sum(valid_points) if valid_points else None
 
     valid_grades = [it.grade for it in items_by_criterion.values() if it.grade is not None]
     avg_grade: Optional[Decimal] = (
@@ -683,82 +893,11 @@ def save_final_sheet_decisions(
 
     final_sheet.total_points = total_points
     final_sheet.total_grade = avg_grade
-
-    # Status: finaler Beschluss -> locked (oder 'decided', je nach deiner Konvention)
     final_sheet.status = "locked"
 
     db.commit()
     db.refresh(final_sheet)
     return final_sheet
 
-def get_member_sheet_view(db, exam_part_id: int, examiner_id: int) -> MemberGradingSheetViewOut:
-    # nutzt deine bestehende Logik
-    sheet = get_or_create_member_sheet(db=db, exam_part_id=exam_part_id, examiner_id=examiner_id)
-
-    sheet = (
-        db.query(ExamGradingSheet)
-        .options(
-            joinedload(ExamGradingSheet.items)
-            .joinedload(ExamGradingItem.criterion)
-            .joinedload(GradingCriterionDefinition.area)
-        )
-        .filter(ExamGradingSheet.exam_grading_sheet_id == sheet.exam_grading_sheet_id)
-        .one()
-    )
-
-    grouped = defaultdict(list)
-    for it in sheet.items:
-        cd = it.criterion
-        area = cd.area  # kann None sein
-        area_id = area.grading_area_id if area else 0
-        grouped[area_id].append((area, it, cd))
-
-    def area_sort_key(area_id: int):
-        area = grouped[area_id][0][0]
-        if area is None:
-            return (9999, 9999)
-        return (area.area_number or 9999, area.grading_area_id)
-
-    areas_out = []
-    for area_id in sorted(grouped.keys(), key=area_sort_key):
-        area = grouped[area_id][0][0]
-
-        crit_rows = grouped[area_id]
-        crit_rows.sort(key=lambda r: (r[2].criterion_number or 9999, r[2].grading_criterion_definition_id))
-
-        criteria_out = []
-        for _, it, cd in crit_rows:
-            criteria_out.append(
-                MemberCriterionItemOut(
-                    exam_grading_item_id=it.exam_grading_item_id,
-                    grading_criterion_definition_id=cd.grading_criterion_definition_id,
-                    criterion_number=cd.criterion_number,
-                    criterion_title=cd.title,
-                    criterion_description=cd.description,
-                    max_points=cd.max_points,
-                    grade=float(it.grade) if it.grade is not None else None,
-                    points=float(it.points) if it.points is not None else None,
-                    comment=it.comment,
-                )
-            )
-
-        areas_out.append(
-            MemberAreaOut(
-                grading_area_id=area.grading_area_id if area else 0,
-                area_number=area.area_number if area else 9999,
-                title=area.title if area else "Ohne Bereich",
-                description=area.description if area else None,
-                criteria=criteria_out,
-            )
-        )
-
-    return MemberGradingSheetViewOut(
-        exam_grading_sheet_id=sheet.exam_grading_sheet_id,
-        exam_part_id=sheet.exam_part_id,
-        examiner_id=sheet.examiner_id,
-        sheet_type=sheet.sheet_type,
-        status=sheet.status,
-        areas=areas_out,
-    )
 
 # End of file

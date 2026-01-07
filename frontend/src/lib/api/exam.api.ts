@@ -26,9 +26,7 @@ function toApiError(method: string, path: string, err: unknown): ApiError {
     body = undefined;
   }
 
-  const statusText =
-    (ax?.response as any)?.statusText ??
-    (status ? "Error" : "Network Error");
+  const statusText = (ax?.response as any)?.statusText ?? (status ? "Error" : "Network Error");
 
   return new ApiError(`[${method} ${path}] ${status} ${statusText}`, status, body);
 }
@@ -63,11 +61,13 @@ async function _putJson<T>(path: string, body?: unknown): Promise<T> {
 }
 
 /* ==================================================
- *   NEU (Prüfungsteile, Protokoll, Bewertung)
- *   Backend-Router-Prefix: /exam -> hier /api/exam/...
+ *   EXAM API
+ *   Backend-Router-Prefix: /exam
  * ================================================== */
 
 export type ExamType = "aevo" | "wfw" | "it" | "custom";
+
+/* ---------- Exam Parts ---------- */
 
 export interface ExamPart {
   exam_part_id: number;
@@ -79,9 +79,7 @@ export interface ExamPart {
   status: string;
   points?: number | null;
   grade?: number | null;
-  protocol_text?: string | null;
 }
-
 
 /* ---------- Start / Lifecycle ---------- */
 
@@ -102,11 +100,12 @@ export interface ExamProtocol {
   exam_id: number;
 
   start_time?: string | null; // ISO
-  end_time?: string | null;   // ISO
+  end_time?: string | null; // ISO
 
-  signed_by_chair: boolean;
-  signed_by_examiner_2: boolean;
-  signed_by_examiner_3: boolean;
+  // Achtung: Backend kann das evtl. (noch) nicht liefern – optional halten
+  signed_by_chair?: boolean;
+  signed_by_examiner_2?: boolean;
+  signed_by_examiner_3?: boolean;
 
   // kommt bei dir im Router aus part1.part_mode (nicht aus exam_protocol)
   part1_mode?: Part1Mode | null;
@@ -153,6 +152,8 @@ export interface ExamCheckinUpdatePayload {
   notes?: string | null;
 }
 
+/* ---------- Exam With Parts ---------- */
+
 export interface ExamWithParts {
   exam_id: number;
   exam_type: ExamType;
@@ -165,7 +166,7 @@ export interface ExamWithParts {
   parts: ExamPart[];
 }
 
-/* ---------- Member-Grading-Sheet ---------- */
+/* ---------- Member-Sheet (raw) ---------- */
 
 export interface GradingItem {
   exam_grading_item_id: number;
@@ -180,14 +181,17 @@ export interface GradingItem {
 export interface GradingSheet {
   exam_grading_sheet_id: number;
   exam_part_id: number;
-  grading_sheet_definition_id: number;
+
+  // kann im Backend existieren, muss aber nicht zwingend im Response sein -> optional halten
+  grading_sheet_definition_id?: number;
+
   examiner_id: number | null;
 
   sheet_type: "member" | "final";
   status: "draft" | "submitted" | "locked" | string;
 
-  total_points: number | null;
-  total_grade: number | null;
+  total_points?: number | null;
+  total_grade?: number | null;
 
   items: GradingItem[];
 }
@@ -201,6 +205,41 @@ export interface GradingItemUpdate {
 
 export interface GradingSheetUpdate {
   items: GradingItemUpdate[];
+}
+
+/* ---------- Member-Sheet (view: grouped by grading_area) ---------- */
+
+export interface MemberCriterionItem {
+  exam_grading_item_id: number;
+  grading_criterion_definition_id: number;
+
+  criterion_number: number;
+  criterion_title: string;
+  criterion_description?: string | null;
+  max_points: number;
+
+  grade: number | null;
+  points: number | null;
+  comment: string | null;
+}
+
+export interface MemberArea {
+  grading_area_id: number;
+  area_number: number;
+  title: string;
+  description?: string | null;
+
+  criteria: MemberCriterionItem[];
+}
+
+export interface MemberGradingSheetView {
+  exam_grading_sheet_id: number;
+  exam_part_id: number;
+  examiner_id: number;
+  sheet_type: "member";
+  status: "draft" | "submitted" | "locked" | string;
+
+  areas: MemberArea[];
 }
 
 /* ---------- Final-Sheet ---------- */
@@ -244,6 +283,18 @@ export interface FinalSheet {
   criteria: FinalCriterion[];
 }
 
+export interface FinalCriterionDecisionIn {
+  /** criterion_id == grading_criterion_definition_id */
+  criterion_id: number;
+  decided_points?: number | null;
+  decided_grade?: number | null;
+  combined_comment?: string | null;
+}
+
+export interface FinalSheetDecisionIn {
+  criteria: FinalCriterionDecisionIn[];
+}
+
 /* ---------- API-Funktionen ---------- */
 
 const EXAM_BASE = "/exam";
@@ -267,10 +318,7 @@ export async function fetchExamWithParts(examId: number): Promise<ExamWithParts>
 }
 
 /** Prüfung starten (setzt started_at/status; optional part1_mode) */
-export async function startExam(
-  examId: number,
-  part1_mode?: Part1Mode
-): Promise<ExamStartOut> {
+export async function startExam(examId: number, part1_mode?: Part1Mode): Promise<ExamStartOut> {
   return _postJson<ExamStartOut>(`${EXAM_BASE}/exams/${examId}/start`, {
     part1_mode: part1_mode ?? null,
   });
@@ -289,9 +337,16 @@ export async function updateExamProtocol(
   return _putJson<ExamProtocol>(`${EXAM_BASE}/exams/${examId}/protocol`, payload);
 }
 
-/** Member-Sheet für aktuellen User & Prüfungsteil */
+/** Member-Sheet (raw) für aktuellen User & Prüfungsteil */
 export async function fetchMyGradingSheet(examPartId: number): Promise<GradingSheet> {
   return _getJson<GradingSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/my-grading-sheet`);
+}
+
+/** Member-Sheet View (grouped by grading_area) */
+export async function fetchMyGradingSheetView(examPartId: number): Promise<MemberGradingSheetView> {
+  return _getJson<MemberGradingSheetView>(
+    `${EXAM_BASE}/exam-parts/${examPartId}/my-grading-sheet/view`
+  );
 }
 
 /** Items (Noten/Punkte/Kommentare) auf einem Sheet speichern */
@@ -317,5 +372,12 @@ export async function fetchFinalGradingSheet(examPartId: number): Promise<FinalS
   return _getJson<FinalSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`);
 }
 
+/** Final-Sheet Entscheidungen schreiben (Ausschuss-Bogen) */
+export async function updateFinalGradingSheet(
+  examPartId: number,
+  payload: FinalSheetDecisionIn
+): Promise<FinalSheet> {
+  return _putJson<FinalSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`, payload);
+}
 
-// End of frontend/src/lib/api/exam.api.ts
+// End of src/lib/api/exam.api.ts

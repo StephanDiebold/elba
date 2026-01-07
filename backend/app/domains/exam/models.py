@@ -25,6 +25,7 @@ class Exam(Base):
     __tablename__ = "exam"
 
     exam_id = Column(Integer, primary_key=True, index=True)
+    # subject_id = Column(Integer, ForeignKey("subject.subject_id"), nullable=True)
 
     candidate_id = Column(Integer, ForeignKey("candidate.candidate_id"), nullable=False)
     exam_day_id = Column(Integer, ForeignKey("exam_day.exam_day_id"), nullable=False)
@@ -145,7 +146,7 @@ class ExamPart(Base):
     weight = Column(DECIMAL(5, 2), nullable=False, default=50.00)
     status = Column(String(50), nullable=False, default="planned")
 
-    points = Column(Integer)
+    points = Column(DECIMAL(6, 2))
     grade = Column(DECIMAL(3, 1))
     protocol_text = Column(Text)
 
@@ -384,7 +385,7 @@ class ExamGradingSheet(Base):
     sheet_type = Column(String(50), nullable=False, default="member")
     status = Column(String(50), nullable=False, default="draft")
 
-    total_points = Column(Integer)
+    total_points = Column(DECIMAL(6,2))
     total_grade = Column(DECIMAL(3, 1))
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -424,7 +425,7 @@ class ExamGradingItem(Base):
         nullable=False,
     )
 
-    points = Column(Integer)
+    points = Column(DECIMAL(6, 2))
     grade = Column(DECIMAL(3, 1))
     comment = Column(Text)
 
@@ -473,4 +474,63 @@ class ExamProtocol(Base):
     )
 
     exam = relationship("Exam", back_populates="protocol")
+
+# ==========================
+# IHK NOTENSCHLÜSSEL (GRADE KEY)
+# ==========================
+
+class GradeKeyVersion(Base):
+    __tablename__ = "grade_key_version"
+
+    grade_key_version_id = Column(Integer, primary_key=True, index=True)
+
+    subject_id = Column(Integer, ForeignKey("subject.subject_id"), nullable=False)
+
+    version_no = Column(Integer, nullable=False, default=1)
+    valid_from = Column(Date, nullable=False)
+    valid_to = Column(Date, nullable=True)
+
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    entries = relationship(
+        "GradeKeyEntry",
+        back_populates="version",
+        cascade="all, delete-orphan",
+        order_by="GradeKeyEntry.points_100.desc()",
+    )
+
+
+class GradeKeyEntry(Base):
+    __tablename__ = "grade_key_entry"
+
+    grade_key_entry_id = Column(Integer, primary_key=True, index=True)
+
+    grade_key_version_id = Column(
+        Integer,
+        ForeignKey("grade_key_version.grade_key_version_id"),
+        nullable=False,
+    )
+
+    # 0..100
+    points_100 = Column(Integer, nullable=False)
+
+    # z.B. 1.0, 1.1, 1.2 ... 6.0
+    grade_decimal = Column(DECIMAL(3, 1), nullable=False)
+
+    # optional: "A/B/C..." und Text
+    grade_letter = Column(String(1), nullable=True)
+    grade_text = Column(String(50), nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    version = relationship("GradeKeyVersion", back_populates="entries")
+
 # End of app/domains/exam/models.py

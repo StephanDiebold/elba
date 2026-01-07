@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Literal
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from sqlalchemy import select
 from datetime import datetime
@@ -49,6 +49,8 @@ from app.domains.exam.schemas import (
     ExpertDiscussionItemOut,
     ExpertDiscussionItemCreate,
     ExpertDiscussionItemUpdate,
+    MemberGradingSheetOut,
+    MemberGradingSheetViewOut,
 )
 
 from app.domains.exam.services.grading_service import (
@@ -57,6 +59,7 @@ from app.domains.exam.services.grading_service import (
     submit_member_sheet,
     build_final_sheet_view,
     save_final_sheet_decisions,
+    get_member_sheet_view,
 )
 
 from app.domains.exam.services.parts_service import ensure_exam_parts_for_exam
@@ -642,6 +645,7 @@ def delete_expert_discussion_item(
 
 @router.get(
     "/exam-parts/{exam_part_id}/my-grading-sheet",
+    response_model=MemberGradingSheetOut,
 )
 def get_my_grading_sheet(
     exam_part_id: int,
@@ -653,9 +657,30 @@ def get_my_grading_sheet(
         exam_part_id=exam_part_id,
         examiner_id=current_user.user_id,
     )
-    # TODO: eigenes Out-Schema bauen – aktuell raw SQLAlchemy-Objekt
+
+    # ✅ WICHTIG: sheet inkl. items sauber neu laden (eager)
+    sheet = db.execute(
+        select(ExamGradingSheet)
+        .where(ExamGradingSheet.exam_grading_sheet_id == sheet.exam_grading_sheet_id)
+        .options(selectinload(ExamGradingSheet.items))
+    ).scalar_one()
+
     return sheet
 
+@router.get(
+    "/exam-parts/{exam_part_id}/my-grading-sheet/view",
+    response_model=MemberGradingSheetViewOut,
+)
+def get_my_grading_sheet_view(
+    exam_part_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return get_member_sheet_view(
+        db=db,
+        exam_part_id=exam_part_id,
+        examiner_id=current_user.user_id,
+    )
 
 @router.put("/grading-sheets/{sheet_id}/items")
 def update_sheet_items_endpoint(

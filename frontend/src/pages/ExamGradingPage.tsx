@@ -1,33 +1,100 @@
 // src/pages/ExamGradingPage.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { toast } from "sonner";
+
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+
 import ExamStartPanel from "@/components/exam/ExamStartPanel";
+import { GradePicker, PointsPicker, type GradeMode } from "@/components/exam/GradePicker";
 
-
-// Werte/Funktionen normal importieren
 import {
   fetchExamWithParts,
-  fetchMyGradingSheet,
+  fetchMyGradingSheetView,
   updateGradingSheetItemsApi,
   submitMyGradingSheet,
 } from "@/lib/api/exam.api";
 
-// Typen als type-only importieren
 import type {
   ExamWithParts,
-  GradingSheet,
-  GradingItem,
+  MemberGradingSheetView,
+  MemberArea,
+  MemberCriterionItem,
   GradingItemUpdate,
 } from "@/lib/api/exam.api";
 
+type RouteParams = { examId?: string };
 
-type RouteParams = {
-  examId?: string;
-};
+// Local type: wir ergänzen _dirty
+type LocalCriterion = MemberCriterionItem & { _dirty?: boolean };
+type LocalArea = Omit<MemberArea, "criteria"> & { criteria: LocalCriterion[] };
+type LocalView = Omit<MemberGradingSheetView, "areas"> & { areas: LocalArea[] };
 
-type LocalItem = GradingItem & { _dirty?: boolean };
+const LS_MODE_KEY = "elba.grading.mode"; // Toggle pro Prüfer (Browser/User)
+
+function safeReadMode(): GradeMode {
+  try {
+    const v = localStorage.getItem(LS_MODE_KEY);
+    if (v === "points" || v === "grades") return v;
+    return "grades";
+  } catch {
+    return "grades";
+  }
+}
+
+function safeWriteMode(mode: GradeMode) {
+  try {
+    localStorage.setItem(LS_MODE_KEY, mode);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * MVP: einfache Schätzung Punkte aus Note.
+ * ACHTUNG: Wenn du später eine IHK-spezifische Tabelle/Formel hast,
+ * ersetzen wir diese Funktion zentral.
+ */
+function estimatePointsFromGrade(grade: number, maxPoints: number): number {
+  // linear: 1 => 100%, 6 => 0%
+  const factor = (6 - grade) / 5; // 1->1.0, 6->0.0
+  const raw = maxPoints * factor;
+  // ✅ intern auf 2 Dezimalstellen stabilisieren (keine 0.5-Rundung!)
+  return Math.round(raw * 100) / 100;
+}
+
+function fmtPoints(value: number): string {
+  return value.toFixed(2).replace(".", ",");
+}
+
+function fmtMaxPoints(value: number): string {
+  return value.toFixed(1).replace(".", ",");
+}
+
+
+/**
+ * Anzeigeformat für Schulnoten:
+ * 2.00 => "2"
+ * 2.50 => "2,5"
+ * 2.25 => "2-"
+ * 1.75 => "2+"
+ */
+function formatSchoolGrade(grade: number | null): string {
+  if (grade == null || Number.isNaN(grade)) return "—";
+
+  const floor = Math.floor(grade);
+  const frac = Math.round((grade - floor) * 100) / 100; // 0 / 0.25 / 0.5 / 0.75
+
+  if (frac === 0) return String(floor);
+  if (frac === 0.5) return `${floor},5`;
+  if (frac === 0.25) return `${floor}-`;
+  if (frac === 0.75) return `${floor + 1}+`;
+
+  // Fallback (sollte bei euren Schritten nicht auftreten)
+  return String(grade).replace(".", ",");
+}
 
 export default function ExamGradingPage() {
   const { examId } = useParams<RouteParams>();
@@ -38,123 +105,266 @@ export default function ExamGradingPage() {
 
   const [selectedPartId, setSelectedPartId] = useState<number | null>(null);
 
-  const [sheetByPartId, setSheetByPartId] = useState<Record<number, GradingSheet | null>>({});
-  const [itemsByPartId, setItemsByPartId] = useState<Record<number, LocalItem[]>>({});
-  const [loadingSheetByPartId, setLoadingSheetByPartId] = useState<Record<number, boolean>>({});
+  // View-State pro Part (grouped)
+  const [viewByPartId, setViewByPartId] = useState<Record<number, LocalView | null>>({});
+  const [loadingByPart, setLoadingByPart] = useState<Record<number, boolean>>({});
+
+  // Accordion open-state pro Part: Set<grading_area_id>
+  const [openAreasByPartId, setOpenAreasByPartId] = useState<Record<number, Set<number>>>({});
+
+  // Hinweise (rechts) pro Item
+  const [openHintsByItemId, setOpenHintsByItemId] = useState<Record<number, boolean>>({});
+
+  // Toggle Noten ↔ Punkte (pro Prüfer via localStorage)
+  const [mode, setMode] = useState<GradeMode>(() => safeReadMode());
 
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-    
+  // Cache-Refs (gegen doppelte Loads)
+  const viewCacheRef = useRef<Record<number, LocalView | null>>({});
+  const loadingCacheRef = useRef<Record<number, boolean>>({});
+
+  /* ----------------------------- Exam laden ----------------------------- */
   useEffect(() => {
     if (!examIdNum || Number.isNaN(examIdNum)) return;
+
+    let cancelled = false;
 
     const loadExam = async () => {
       try {
         setLoadingExam(true);
         const data = await fetchExamWithParts(examIdNum);
-        setExam(data);
+        if (cancelled) return;
 
-        if (data.parts.length > 0) {
-          setSelectedPartId(data.parts[0].exam_part_id);
-        }
-      } catch (err: any) {
+        setExam(data);
+        if (data.parts.length > 0) setSelectedPartId(data.parts[0].exam_part_id);
+      } catch (err) {
         console.error(err);
         toast.error("Prüfung konnte nicht geladen werden.");
       } finally {
-        setLoadingExam(false);
+        if (!cancelled) setLoadingExam(false);
       }
     };
 
     loadExam();
+    return () => {
+      cancelled = true;
+    };
   }, [examIdNum]);
 
+  /* -------- Refs immer aktuell halten (wichtig für Cache-Check) -------- */
+  useEffect(() => {
+    viewCacheRef.current = viewByPartId;
+  }, [viewByPartId]);
+
+  useEffect(() => {
+    loadingCacheRef.current = loadingByPart;
+  }, [loadingByPart]);
+
+  /* --------------------- Lazy Loading: View pro Tab -------------------- */
   useEffect(() => {
     if (!selectedPartId) return;
 
-    // schon geladen? dann nicht nochmal laden
-    if (sheetByPartId[selectedPartId]) return;
-    if (loadingSheetByPartId[selectedPartId]) return;
+    const partId = selectedPartId;
 
-    const loadSheet = async () => {
+    const isCached = Object.prototype.hasOwnProperty.call(viewCacheRef.current, partId);
+    if (isCached) return;
+
+    if (loadingCacheRef.current[partId]) return;
+
+    let cancelled = false;
+
+    const loadViewForPart = async () => {
       try {
-        setLoadingSheetByPartId((prev) => ({ ...prev, [selectedPartId]: true }));
+        setLoadingByPart((prev) => ({ ...prev, [partId]: true }));
 
-        const s = await fetchMyGradingSheet(selectedPartId);
+        const v = await fetchMyGradingSheetView(partId);
+        if (cancelled) return;
 
-        setSheetByPartId((prev) => ({ ...prev, [selectedPartId]: s }));
-        setItemsByPartId((prev) => ({
+        const local: LocalView = {
+          ...v,
+          areas: (v.areas || []).map((a) => ({
+            ...a,
+            criteria: (a.criteria || []).map((c) => ({ ...c, _dirty: false })),
+          })),
+        };
+
+        setViewByPartId((prev) => ({ ...prev, [partId]: local }));
+
+        // Default: nur erste Area offen
+        const firstAreaId = local.areas?.[0]?.grading_area_id;
+        setOpenAreasByPartId((prev) => ({
           ...prev,
-          [selectedPartId]: (s.items || []).map((it) => ({ ...it, _dirty: false })),
+          [partId]: new Set(firstAreaId ? [firstAreaId] : []),
         }));
-      } catch (err: any) {
+      } catch (err) {
         console.error(err);
         toast.error("Bewertungsbogen konnte nicht geladen werden.");
-        setSheetByPartId((prev) => ({ ...prev, [selectedPartId]: null }));
-        setItemsByPartId((prev) => ({ ...prev, [selectedPartId]: [] }));
+        if (cancelled) return;
+
+        setViewByPartId((prev) => ({ ...prev, [partId]: null }));
+        setOpenAreasByPartId((prev) => ({ ...prev, [partId]: new Set() }));
       } finally {
-        setLoadingSheetByPartId((prev) => ({ ...prev, [selectedPartId]: false }));
+        if (!cancelled) setLoadingByPart((prev) => ({ ...prev, [partId]: false }));
       }
     };
 
-  loadSheet();
-}, [selectedPartId, sheetByPartId, loadingSheetByPartId]);
+    loadViewForPart();
 
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPartId]);
 
-  const handleGradeChange = (itemId: number, value: string) => {
-    if (!selectedPartId) return;
+  /* -------------------------- Helpers / Derived ------------------------- */
 
-    setItemsByPartId((prev) => ({
+  const toggleArea = (partId: number, areaId: number) => {
+    setOpenAreasByPartId((prev) => {
+      const existing = prev[partId] ? new Set(prev[partId]) : new Set<number>();
+      if (existing.has(areaId)) existing.delete(areaId);
+      else existing.add(areaId);
+      return { ...prev, [partId]: existing };
+    });
+  };
+
+  const openAllAreas = (partId: number) => {
+    const v = viewByPartId[partId];
+    if (!v) return;
+    setOpenAreasByPartId((prev) => ({
       ...prev,
-      [selectedPartId]: (prev[selectedPartId] || []).map((it) =>
-        it.exam_grading_item_id === itemId
-          ? { ...it, grade: value === "" ? null : Number(value), _dirty: true }
-          : it
-      ),
+      [partId]: new Set(v.areas.map((a) => a.grading_area_id)),
     }));
   };
 
-  const handlePointsChange = (itemId: number, value: string) => {
-    if (!selectedPartId) return;
-
-    setItemsByPartId((prev) => ({
-      ...prev,
-      [selectedPartId]: (prev[selectedPartId] || []).map((it) =>
-        it.exam_grading_item_id === itemId
-          ? { ...it, points: value === "" ? null : Number(value), _dirty: true }
-          : it
-      ),
-    }));
+  const closeAllAreas = (partId: number) => {
+    setOpenAreasByPartId((prev) => ({ ...prev, [partId]: new Set() }));
   };
 
-  const handleCommentChange = (itemId: number, value: string) => {
-    if (!selectedPartId) return;
-
-    setItemsByPartId((prev) => ({
-      ...prev,
-      [selectedPartId]: (prev[selectedPartId] || []).map((it) =>
-        it.exam_grading_item_id === itemId
-          ? { ...it, comment: value, _dirty: true }
-          : it
-      ),
-    }));
+  // wenn User tippt -> Area geöffnet halten
+  const ensureAreaOpen = (partId: number, areaId: number) => {
+    setOpenAreasByPartId((prev) => {
+      const existing = prev[partId] ? new Set(prev[partId]) : new Set<number>();
+      existing.add(areaId);
+      return { ...prev, [partId]: existing };
+    });
   };
 
-  const handleSave = async () => {
-    if (!selectedPartId) return;
+  const getAreaOpenCount = (area: LocalArea) => {
+    // "offen": Kriterien ohne Punkte ODER ohne Note (je nach Modus)
+    const missing =
+      area.criteria?.filter((c) => {
+        if (mode === "points") return c.points == null;
+        return c.grade == null;
+      }).length ?? 0;
 
-    const partSheet = sheetByPartId[selectedPartId] ?? null;
-    const partItems = itemsByPartId[selectedPartId] ?? [];
-    if (!partSheet) return;
+    const total = area.criteria?.length ?? 0;
+    return { missing, total };
+  };
 
-    const changed: GradingItemUpdate[] = partItems
-      .filter((it) => it._dirty)
-      .map((it) => ({
-        exam_grading_item_id: it.exam_grading_item_id,
-        grade: it.grade ?? null,
-        points: it.points ?? null,
-        comment: it.comment ?? null,
-      }));
+  const getCriterionAchievedPoints = (c: LocalCriterion) => {
+    if (mode === "points") return typeof c.points === "number" ? c.points : 0;
+    if (typeof c.points === "number") return c.points; // falls Backend/Client schon gesetzt hat
+    if (typeof c.grade === "number") return estimatePointsFromGrade(c.grade, c.max_points);
+    return 0;
+  };
+
+  const getAreaPoints = (area: LocalArea) => {
+    const sumPoints = area.criteria?.reduce((acc, c) => acc + getCriterionAchievedPoints(c), 0) ?? 0;
+    const maxPoints =
+      area.criteria?.reduce(
+        (acc, c) => acc + (typeof c.max_points === "number" ? c.max_points : 0),
+        0
+      ) ?? 0;
+    return { sumPoints, maxPoints };
+  };
+
+  const toggleHint = (itemId: number) => {
+    setOpenHintsByItemId((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
+  };
+
+  const setModePersisted = (next: GradeMode) => {
+    setMode(next);
+    safeWriteMode(next);
+  };
+
+  /* --------------------------- Change Handler --------------------------- */
+
+  const updateCriterion = (
+    partId: number,
+    areaId: number,
+    itemId: number,
+    patch: Partial<Pick<LocalCriterion, "grade" | "points" | "comment">>
+  ) => {
+    setViewByPartId((prev) => {
+      const v = prev[partId];
+      if (!v) return prev;
+
+      const updatedAreas = v.areas.map((a) => {
+        if (a.grading_area_id !== areaId) return a;
+        return {
+          ...a,
+          criteria: a.criteria.map((c) =>
+            c.exam_grading_item_id === itemId ? { ...c, ...patch, _dirty: true } : c
+          ),
+        };
+      });
+
+      return { ...prev, [partId]: { ...v, areas: updatedAreas } };
+    });
+
+    ensureAreaOpen(partId, areaId);
+  };
+
+  const handleGradeChanged = (
+    partId: number,
+    areaId: number,
+    c: LocalCriterion,
+    next: number | null
+  ) => {
+    if (mode !== "grades") return;
+
+    // Punkte sofort schätzen und mitschreiben (MVP), damit Header "x / max" direkt stimmt
+    const nextPoints = next == null ? null : estimatePointsFromGrade(next, c.max_points);
+
+    updateCriterion(partId, areaId, c.exam_grading_item_id, {
+      grade: next,
+      points: nextPoints,
+    });
+  };
+
+  const handlePointsChanged = (
+    partId: number,
+    areaId: number,
+    c: LocalCriterion,
+    next: number | null
+  ) => {
+    if (mode !== "points") return;
+    updateCriterion(partId, areaId, c.exam_grading_item_id, {
+      points: next,
+      grade: null, // im Punkte-Modus keine Note (MVP)
+    });
+  };
+
+  /* ------------------------------- Save -------------------------------- */
+
+  const handleSave = async (partId: number) => {
+    const v = viewByPartId[partId];
+    if (!v) return;
+
+    const changed: GradingItemUpdate[] = [];
+    for (const a of v.areas) {
+      for (const c of a.criteria) {
+        if (c._dirty) {
+          changed.push({
+            exam_grading_item_id: c.exam_grading_item_id,
+            grade: c.grade ?? null,
+            points: c.points ?? null,
+            comment: c.comment ?? null,
+          });
+        }
+      }
+    }
 
     if (changed.length === 0) {
       toast.info("Keine Änderungen zum Speichern.");
@@ -163,15 +373,26 @@ export default function ExamGradingPage() {
 
     try {
       setSaving(true);
-      await updateGradingSheetItemsApi(partSheet.exam_grading_sheet_id, { items: changed });
+      await updateGradingSheetItemsApi(v.exam_grading_sheet_id, { items: changed });
 
-      setItemsByPartId((prev) => ({
-        ...prev,
-        [selectedPartId]: (prev[selectedPartId] || []).map((it) => ({ ...it, _dirty: false })),
-      }));
+      // dirty zurücksetzen
+      setViewByPartId((prev) => {
+        const cur = prev[partId];
+        if (!cur) return prev;
+        return {
+          ...prev,
+          [partId]: {
+            ...cur,
+            areas: cur.areas.map((a) => ({
+              ...a,
+              criteria: a.criteria.map((c) => ({ ...c, _dirty: false })),
+            })),
+          },
+        };
+      });
 
       toast.success("Bewertung gespeichert.");
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
       toast.error("Bewertung konnte nicht gespeichert werden.");
     } finally {
@@ -179,27 +400,36 @@ export default function ExamGradingPage() {
     }
   };
 
-  const handleSubmit = async () => {
-    if (!selectedPartId) return;
+  /* ------------------------------ Submit ------------------------------- */
 
-    const partSheet = sheetByPartId[selectedPartId] ?? null;
-    if (!partSheet) return;
+  const handleSubmit = async (partId: number) => {
+    const v = viewByPartId[partId];
+    if (!v) return;
 
     try {
       setSubmitting(true);
-      const res = await submitMyGradingSheet(partSheet.exam_grading_sheet_id);
+      const res = await submitMyGradingSheet(v.exam_grading_sheet_id);
+
       toast.success(
         res.all_submitted_for_part
           ? "Bewertung eingereicht. Alle Prüfer haben eingereicht."
           : "Bewertung eingereicht."
       );
-    } catch (err: any) {
+
+      setViewByPartId((prev) => {
+        const cur = prev[partId];
+        if (!cur) return prev;
+        return { ...prev, [partId]: { ...cur, status: "submitted" } };
+      });
+    } catch (err) {
       console.error(err);
       toast.error("Bewertung konnte nicht eingereicht werden.");
     } finally {
       setSubmitting(false);
     }
   };
+
+  /* -------------------------------- UI -------------------------------- */
 
   return (
     <div className="p-6 space-y-6">
@@ -209,8 +439,7 @@ export default function ExamGradingPage() {
           <h1 className="text-2xl font-semibold">Prüfungsbewertung</h1>
           {exam && (
             <p className="text-sm text-gray-500">
-              Prüfung #{exam.exam_id} · Typ: {exam.exam_type.toUpperCase()} ·
-              Status: {exam.status}
+              Prüfung #{exam.exam_id} · Typ: {exam.exam_type.toUpperCase()} · Status: {exam.status}
             </p>
           )}
         </div>
@@ -223,9 +452,11 @@ export default function ExamGradingPage() {
         onChanged={async () => {
           const data = await fetchExamWithParts(examIdNum);
           setExam(data);
+          if (!selectedPartId && data.parts.length > 0) {
+            setSelectedPartId(data.parts[0].exam_part_id);
+          }
         }}
       />
-
 
       {/* Teile-Auswahl */}
       <div className="w-full">
@@ -247,135 +478,295 @@ export default function ExamGradingPage() {
             </TabsList>
 
             {exam.parts.map((part) => {
-              const isActive = selectedPartId === part.exam_part_id;
-              const partSheet = sheetByPartId[part.exam_part_id] ?? null;
-              const partItems = itemsByPartId[part.exam_part_id] ?? [];
-              const partLoading = !!loadingSheetByPartId[part.exam_part_id];
+              const partId = part.exam_part_id;
+              const v = viewByPartId[partId] ?? null;
+              const isLoading = !!loadingByPart[partId];
+              const openSet = openAreasByPartId[partId] ?? new Set<number>();
 
-              const partHasDirty = partItems.some((it) => it._dirty);
-              
+              const partHasDirty = v?.areas?.some((a) => a.criteria?.some((c) => c._dirty)) ?? false;
+
               return (
-                <TabsContent
-                  key={part.exam_part_id}
-                  value={String(part.exam_part_id)}
-                  className="mt-4"
-                >
-                  {!isActive ? null : (
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-                      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-                        <div>
-                          <h2 className="font-semibold text-lg">Bewertungsbogen</h2>
-                          {partSheet && (
-                            <p className="text-xs text-gray-500">
-                              Sheet #{partSheet.exam_grading_sheet_id} · Status: {partSheet.status}
-                            </p>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={handleSave}
-                            disabled={!partSheet || saving || !partHasDirty}
-                            className="px-3 py-1.5 text-sm rounded-md border border-gray-300 bg-white disabled:opacity-60"
-                          >
-                            {saving ? "Speichern …" : "Speichern"}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={handleSubmit}
-                            disabled={!partSheet || submitting}
-                            className="px-4 py-1.5 text-sm rounded-md bg-green-600 text-white disabled:opacity-60"
-                          >
-                            {submitting ? "Einreichen …" : "Einreichen"}
-                          </button>
-                        </div>
+                <TabsContent key={partId} value={String(partId)} className="mt-4">
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+                    <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                      <div>
+                        <h2 className="font-semibold text-lg">Bewertungsbogen</h2>
+                        {v && (
+                          <p className="text-xs text-gray-500">
+                            Sheet #{v.exam_grading_sheet_id} · Status: {v.status}
+                          </p>
+                        )}
                       </div>
 
-                      <div className="p-4">
-                        {partLoading && <div>Bewertungsbogen wird geladen …</div>}
+                      <div className="flex items-center gap-2">
+                        {/* Toggle Noten ↔ Punkte */}
+                        <div className="flex items-center gap-2 mr-2">
+                          <span className="text-xs text-gray-500">Modus:</span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={mode === "grades" ? "default" : "outline"}
+                            onClick={() => setModePersisted("grades")}
+                            disabled={isLoading}
+                          >
+                            Noten
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={mode === "points" ? "default" : "outline"}
+                            onClick={() => setModePersisted("points")}
+                            disabled={isLoading}
+                          >
+                            Punkte
+                          </Button>
+                        </div>
 
-                        {!partLoading && !partSheet && (
-                          <div className="text-sm text-gray-500">
-                            Für diesen Prüfungsteil ist noch kein Bewertungsbogen vorhanden.
-                          </div>
-                        )}
+                        {/* Alle öffnen/schließen */}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openAllAreas(partId)}
+                          disabled={!v || isLoading}
+                        >
+                          Alle öffnen
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => closeAllAreas(partId)}
+                          disabled={!v || isLoading}
+                        >
+                          Alle schließen
+                        </Button>
 
-                        {!partLoading && partSheet && (
-                          <div className="space-y-3">
-                            {partItems.map((item) => (
-                              <div
-                                key={item.exam_grading_item_id}
-                                className="border border-gray-200 rounded-lg p-3 flex flex-col gap-2"
-                              >
-                                <div className="flex items-center justify-between gap-4">
-                                  <div className="text-sm font-medium">
-                                    Kriterium #{item.grading_criterion_definition_id}
-                                  </div>
-                                  {item._dirty && (
-                                    <span className="text-xs text-amber-600">
-                                      geändert, noch nicht gespeichert
-                                    </span>
-                                  )}
-                                </div>
+                        <div className="w-px h-6 bg-gray-200 mx-1" />
 
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                  <div>
-                                    <label className="block text-xs text-gray-500 mb-1">
-                                      Note (1 – 6, Schritt 0.25)
-                                    </label>
-                                    <input
-                                      type="number"
-                                      step={0.25}
-                                      min={1}
-                                      max={6}
-                                      value={item.grade ?? ""}
-                                      onChange={(e) =>
-                                        handleGradeChange(item.exam_grading_item_id, e.target.value)
-                                      }
-                                      className="w-full border rounded-md px-2 py-1 text-sm"
-                                    />
-                                  </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleSave(partId)}
+                          disabled={!v || saving || !partHasDirty}
+                        >
+                          {saving ? "Speichern …" : "Speichern"}
+                        </Button>
 
-                                  <div>
-                                    <label className="block text-xs text-gray-500 mb-1">Punkte</label>
-                                    <input
-                                      type="number"
-                                      step={0.5}
-                                      value={item.points ?? ""}
-                                      onChange={(e) =>
-                                        handlePointsChange(item.exam_grading_item_id, e.target.value)
-                                      }
-                                      className="w-full border rounded-md px-2 py-1 text-sm"
-                                    />
-                                  </div>
-                                </div>
-
-                                <div>
-                                  <label className="block text-xs text-gray-500 mb-1">Kommentar</label>
-                                  <textarea
-                                    rows={2}
-                                    value={item.comment ?? ""}
-                                    onChange={(e) =>
-                                      handleCommentChange(item.exam_grading_item_id, e.target.value)
-                                    }
-                                    className="w-full border rounded-md px-2 py-1 text-sm"
-                                  />
-                                </div>
-                              </div>
-                            ))}
-
-                            {partItems.length === 0 && (
-                              <div className="text-sm text-gray-500">
-                                Für diesen Prüfungsteil sind noch keine Kriterien hinterlegt.
-                              </div>
-                            )}
-                          </div>
-                        )}
+                        <Button
+                          size="sm"
+                          variant="default"
+                          className="bg-green-600 hover:bg-green-700"
+                          onClick={() => handleSubmit(partId)}
+                          disabled={!v || submitting}
+                        >
+                          {submitting ? "Einreichen …" : "Einreichen"}
+                        </Button>
                       </div>
                     </div>
-                  )}
+
+                    <div className="p-4">
+                      {isLoading && <div>Bewertungsbogen wird geladen …</div>}
+
+                      {!isLoading && !v && (
+                        <div className="text-sm text-gray-500">Kein Bewertungsbogen verfügbar.</div>
+                      )}
+
+                      {!isLoading && v && (
+                        <div className="space-y-4">
+                          {v.areas.map((area) => {
+                            const isOpen = openSet.has(area.grading_area_id);
+                            const { missing, total } = getAreaOpenCount(area);
+                            const { sumPoints, maxPoints } = getAreaPoints(area);
+
+                            return (
+                              <div
+                                key={area.grading_area_id}
+                                className="border border-gray-200 rounded-lg overflow-hidden"
+                              >
+                                {/* Area Header */}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleArea(partId, area.grading_area_id)}
+                                  className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex items-center justify-between"
+                                >
+                                  <div className="text-left">
+                                    <div className="font-semibold">
+                                      {area.area_number}. {area.title}
+                                    </div>
+                                    {area.description && (
+                                      <div className="text-xs text-gray-500">{area.description}</div>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    <Badge
+                                      variant="secondary"
+                                      className="bg-transparent border border-gray-300 text-gray-700"
+                                    >
+                                      offen {missing}/{total}
+                                    </Badge>
+
+                                    <Badge
+                                      variant="secondary"
+                                      className="bg-transparent border border-gray-300 text-gray-700"
+                                    >
+                                      Σ {fmtPoints(sumPoints)} / {fmtMaxPoints(maxPoints)}
+                                    </Badge>
+                                  </div>
+                                </button>
+
+                                {/* Area Content */}
+                                {isOpen && (
+                                  <div className="p-4 space-y-3">
+                                    {area.criteria.map((c) => {
+                                      const achieved = getCriterionAchievedPoints(c);
+                                      const hintOpen = !!openHintsByItemId[c.exam_grading_item_id];
+                                      const pct =
+                                        c.max_points > 0
+                                          ? Math.round((achieved / c.max_points) * 100)
+                                          : 0;
+
+                                      return (
+                                        <div
+                                          key={c.exam_grading_item_id}
+                                          className="border border-gray-200 rounded-lg p-3"
+                                        >
+                                          {/* Item header */}
+                                          <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                              <div className="text-sm font-medium truncate">
+                                                {c.criterion_number}. {c.criterion_title}
+                                              </div>
+
+                                              <div className="text-xs text-gray-500">
+                                                Punkte: {fmtPoints(achieved)} / {fmtMaxPoints(c.max_points)}
+                                                {mode === "points" && (
+                                                  <span className="ml-2">({pct}%)</span>
+                                                )}
+                                                {c._dirty ? (
+                                                  <span className="ml-2 text-amber-600">geändert</span>
+                                                ) : null}
+                                              </div>
+
+                                              {/* NOTE direkt unter Punkte – als 2+/2-/2,5 */}
+                                              {mode === "grades" && (
+                                                <div className="text-xs text-gray-500">
+                                                  Note: {formatSchoolGrade(c.grade ?? null)}
+                                                </div>
+                                              )}
+                                            </div>
+
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => toggleHint(c.exam_grading_item_id)}
+                                              >
+                                                Hinweise {hintOpen ? "ausblenden" : "anzeigen"}
+                                              </Button>
+                                            </div>
+                                          </div>
+
+                                          {/* 2-Spalten Layout (querformat): links Bewertung, rechts Hinweise */}
+                                          <div
+                                            className={[
+                                              "mt-3 grid grid-cols-1 gap-4",
+                                              hintOpen
+                                                ? "md:grid-cols-[1fr_320px]"
+                                                : "md:grid-cols-1",
+                                            ].join(" ")}
+                                          >
+                                            {/* LEFT */}
+                                            <div className="space-y-3">
+                                              {mode === "grades" ? (
+                                                <div>
+                                                  {/* Label entfernt, damit "Note" nicht mehrfach erscheint */}
+                                                  <GradePicker
+                                                    value={c.grade ?? null}
+                                                    onChange={(next) =>
+                                                      handleGradeChanged(
+                                                        partId,
+                                                        area.grading_area_id,
+                                                        c,
+                                                        next
+                                                      )
+                                                    }
+                                                  />
+                                                </div>
+                                              ) : (
+                                                <div>
+                                                  <div className="text-xs text-gray-500 mb-1">Punkte</div>
+                                                  <PointsPicker
+                                                    value={c.points ?? null}
+                                                    maxPoints={c.max_points}
+                                                    onChange={(next) =>
+                                                      handlePointsChanged(
+                                                        partId,
+                                                        area.grading_area_id,
+                                                        c,
+                                                        next
+                                                      )
+                                                    }
+                                                  />
+                                                </div>
+                                              )}
+
+                                              <div>
+                                                <label className="block text-xs text-gray-500 mb-1">
+                                                  Kommentar
+                                                </label>
+                                                <textarea
+                                                  rows={2}
+                                                  value={c.comment ?? ""}
+                                                  onChange={(e) =>
+                                                    updateCriterion(
+                                                      partId,
+                                                      area.grading_area_id,
+                                                      c.exam_grading_item_id,
+                                                      { comment: e.target.value }
+                                                    )
+                                                  }
+                                                  className="w-full border rounded-md px-2 py-1 text-sm"
+                                                />
+                                              </div>
+                                            </div>
+
+                                            {/* RIGHT (Hinweise) – nur rendern wenn offen */}
+                                            {hintOpen && (
+                                              <div className="border rounded-lg bg-gray-50 p-3">
+                                                <div className="text-sm font-medium mb-2">Hinweise</div>
+                                                <div className="text-sm text-gray-700 whitespace-pre-wrap">
+                                                  {c.criterion_description?.trim()
+                                                    ? c.criterion_description
+                                                    : "Keine Hinweise hinterlegt"}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+
+                                    {area.criteria.length === 0 && (
+                                      <div className="text-sm text-gray-500">
+                                        Keine Kriterien in diesem Bereich.
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+
+                          {v.areas.length === 0 && (
+                            <div className="text-sm text-gray-500">
+                              Für diesen Prüfungsteil sind noch keine Bereiche/Kriterien hinterlegt.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </TabsContent>
               );
             })}
@@ -387,3 +778,4 @@ export default function ExamGradingPage() {
     </div>
   );
 }
+// Ende src/pages/ExamGradingPage.tsx
