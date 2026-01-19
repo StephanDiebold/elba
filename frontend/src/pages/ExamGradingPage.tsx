@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 import ExamStartPanel from "@/components/exam/ExamStartPanel";
+import ExpertDiscussionForm from "@/components/exam/ExpertDiscussionForm";
 import { GradePicker, PointsPicker, type GradeMode } from "@/components/exam/GradePicker";
 
 import {
@@ -61,7 +62,7 @@ function estimatePointsFromGrade(grade: number, maxPoints: number): number {
   // linear: 1 => 100%, 6 => 0%
   const factor = (6 - grade) / 5; // 1->1.0, 6->0.0
   const raw = maxPoints * factor;
-  // ✅ intern auf 2 Dezimalstellen stabilisieren (keine 0.5-Rundung!)
+  // intern auf 2 Dezimalstellen stabilisieren
   return Math.round(raw * 100) / 100;
 }
 
@@ -72,7 +73,6 @@ function fmtPoints(value: number): string {
 function fmtMaxPoints(value: number): string {
   return value.toFixed(1).replace(".", ",");
 }
-
 
 /**
  * Anzeigeformat für Schulnoten:
@@ -92,7 +92,6 @@ function formatSchoolGrade(grade: number | null): string {
   if (frac === 0.25) return `${floor}-`;
   if (frac === 0.75) return `${floor + 1}+`;
 
-  // Fallback (sollte bei euren Schritten nicht auftreten)
   return String(grade).replace(".", ",");
 }
 
@@ -173,6 +172,15 @@ export default function ExamGradingPage() {
 
     if (loadingCacheRef.current[partId]) return;
 
+    // ✅ Teil 2 (Fachgespräch) nutzt NICHT den klassischen GradingSheet-View
+    const selectedPart = exam?.parts?.find((p) => p.exam_part_id === partId) ?? null;
+    if (selectedPart?.part_number === 2) {
+      // Sentinel, damit kein Reload versucht wird
+      setViewByPartId((prev) => ({ ...prev, [partId]: null }));
+      setOpenAreasByPartId((prev) => ({ ...prev, [partId]: new Set() }));
+      return;
+    }
+
     let cancelled = false;
 
     const loadViewForPart = async () => {
@@ -184,9 +192,9 @@ export default function ExamGradingPage() {
 
         const local: LocalView = {
           ...v,
-          areas: (v.areas || []).map((a) => ({
+          areas: (v.areas || []).map((a: MemberArea) => ({
             ...a,
-            criteria: (a.criteria || []).map((c) => ({ ...c, _dirty: false })),
+            criteria: (a.criteria || []).map((c: MemberCriterionItem) => ({ ...c, _dirty: false })),
           })),
         };
 
@@ -215,7 +223,7 @@ export default function ExamGradingPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedPartId]);
+  }, [selectedPartId, exam]);
 
   /* -------------------------- Helpers / Derived ------------------------- */
 
@@ -251,7 +259,6 @@ export default function ExamGradingPage() {
   };
 
   const getAreaOpenCount = (area: LocalArea) => {
-    // "offen": Kriterien ohne Punkte ODER ohne Note (je nach Modus)
     const missing =
       area.criteria?.filter((c) => {
         if (mode === "points") return c.points == null;
@@ -264,7 +271,7 @@ export default function ExamGradingPage() {
 
   const getCriterionAchievedPoints = (c: LocalCriterion) => {
     if (mode === "points") return typeof c.points === "number" ? c.points : 0;
-    if (typeof c.points === "number") return c.points; // falls Backend/Client schon gesetzt hat
+    if (typeof c.points === "number") return c.points;
     if (typeof c.grade === "number") return estimatePointsFromGrade(c.grade, c.max_points);
     return 0;
   };
@@ -323,8 +330,6 @@ export default function ExamGradingPage() {
     next: number | null
   ) => {
     if (mode !== "grades") return;
-
-    // Punkte sofort schätzen und mitschreiben (MVP), damit Header "x / max" direkt stimmt
     const nextPoints = next == null ? null : estimatePointsFromGrade(next, c.max_points);
 
     updateCriterion(partId, areaId, c.exam_grading_item_id, {
@@ -340,9 +345,10 @@ export default function ExamGradingPage() {
     next: number | null
   ) => {
     if (mode !== "points") return;
+
     updateCriterion(partId, areaId, c.exam_grading_item_id, {
       points: next,
-      grade: null, // im Punkte-Modus keine Note (MVP)
+      grade: null,
     });
   };
 
@@ -439,7 +445,8 @@ export default function ExamGradingPage() {
           <h1 className="text-2xl font-semibold">Prüfungsbewertung</h1>
           {exam && (
             <p className="text-sm text-gray-500">
-              Prüfung #{exam.exam_id} · Typ: {exam.exam_type.toUpperCase()} · Status: {exam.status}
+              Prüfung #{exam.exam_id} · Typ: {String(exam.exam_type).toUpperCase()} · Status:{" "}
+              {exam.status}
             </p>
           )}
         </div>
@@ -469,21 +476,43 @@ export default function ExamGradingPage() {
             className="w-full"
           >
             <TabsList className="w-full justify-start">
-              {exam.parts.map((part) => (
-                <TabsTrigger key={part.exam_part_id} value={String(part.exam_part_id)}>
-                  Teil {part.part_number}
-                  {part.part_mode ? ` (${part.part_mode})` : ""}
-                </TabsTrigger>
-              ))}
+              {exam.parts.map((part) => {
+                const label =
+                  part.part_number === 2
+                    ? "Teil 2 (Fachgespräch)"
+                    : `Teil ${part.part_number}${part.part_mode ? ` (${part.part_mode})` : ""}`;
+
+                return (
+                  <TabsTrigger key={part.exam_part_id} value={String(part.exam_part_id)}>
+                    {label}
+                  </TabsTrigger>
+                );
+              })}
             </TabsList>
 
             {exam.parts.map((part) => {
               const partId = part.exam_part_id;
+
+              // ✅ Teil 2: Fachgespräch
+              if (part.part_number === 2) {
+                return (
+                  <TabsContent key={partId} value={String(partId)} className="mt-4">
+                    {Number.isFinite(examIdNum) ? (
+                      <ExpertDiscussionForm examId={examIdNum} />
+                    ) : (
+                      <div className="text-sm text-gray-500">Ungültige Prüfung.</div>
+                    )}
+                  </TabsContent>
+                );
+              }
+
+              // Teil 1 (klassischer Bewertungsbogen)
               const v = viewByPartId[partId] ?? null;
               const isLoading = !!loadingByPart[partId];
               const openSet = openAreasByPartId[partId] ?? new Set<number>();
 
-              const partHasDirty = v?.areas?.some((a) => a.criteria?.some((c) => c._dirty)) ?? false;
+              const partHasDirty =
+                v?.areas?.some((a) => a.criteria?.some((c) => c._dirty)) ?? false;
 
               return (
                 <TabsContent key={partId} value={String(partId)} className="mt-4">
@@ -567,7 +596,9 @@ export default function ExamGradingPage() {
                       {isLoading && <div>Bewertungsbogen wird geladen …</div>}
 
                       {!isLoading && !v && (
-                        <div className="text-sm text-gray-500">Kein Bewertungsbogen verfügbar.</div>
+                        <div className="text-sm text-gray-500">
+                          Kein Bewertungsbogen verfügbar.
+                        </div>
                       )}
 
                       {!isLoading && v && (
@@ -593,7 +624,9 @@ export default function ExamGradingPage() {
                                       {area.area_number}. {area.title}
                                     </div>
                                     {area.description && (
-                                      <div className="text-xs text-gray-500">{area.description}</div>
+                                      <div className="text-xs text-gray-500">
+                                        {area.description}
+                                      </div>
                                     )}
                                   </div>
 
@@ -638,16 +671,18 @@ export default function ExamGradingPage() {
                                               </div>
 
                                               <div className="text-xs text-gray-500">
-                                                Punkte: {fmtPoints(achieved)} / {fmtMaxPoints(c.max_points)}
+                                                Punkte: {fmtPoints(achieved)} /{" "}
+                                                {fmtMaxPoints(c.max_points)}
                                                 {mode === "points" && (
                                                   <span className="ml-2">({pct}%)</span>
                                                 )}
                                                 {c._dirty ? (
-                                                  <span className="ml-2 text-amber-600">geändert</span>
+                                                  <span className="ml-2 text-amber-600">
+                                                    geändert
+                                                  </span>
                                                 ) : null}
                                               </div>
 
-                                              {/* NOTE direkt unter Punkte – als 2+/2-/2,5 */}
                                               {mode === "grades" && (
                                                 <div className="text-xs text-gray-500">
                                                   Note: {formatSchoolGrade(c.grade ?? null)}
@@ -667,7 +702,6 @@ export default function ExamGradingPage() {
                                             </div>
                                           </div>
 
-                                          {/* 2-Spalten Layout (querformat): links Bewertung, rechts Hinweise */}
                                           <div
                                             className={[
                                               "mt-3 grid grid-cols-1 gap-4",
@@ -679,23 +713,22 @@ export default function ExamGradingPage() {
                                             {/* LEFT */}
                                             <div className="space-y-3">
                                               {mode === "grades" ? (
-                                                <div>
-                                                  {/* Label entfernt, damit "Note" nicht mehrfach erscheint */}
-                                                  <GradePicker
-                                                    value={c.grade ?? null}
-                                                    onChange={(next) =>
-                                                      handleGradeChanged(
-                                                        partId,
-                                                        area.grading_area_id,
-                                                        c,
-                                                        next
-                                                      )
-                                                    }
-                                                  />
-                                                </div>
+                                                <GradePicker
+                                                  value={c.grade ?? null}
+                                                  onChange={(next) =>
+                                                    handleGradeChanged(
+                                                      partId,
+                                                      area.grading_area_id,
+                                                      c,
+                                                      next
+                                                    )
+                                                  }
+                                                />
                                               ) : (
                                                 <div>
-                                                  <div className="text-xs text-gray-500 mb-1">Punkte</div>
+                                                  <div className="text-xs text-gray-500 mb-1">
+                                                    Punkte
+                                                  </div>
                                                   <PointsPicker
                                                     value={c.points ?? null}
                                                     maxPoints={c.max_points}
@@ -723,7 +756,9 @@ export default function ExamGradingPage() {
                                                       partId,
                                                       area.grading_area_id,
                                                       c.exam_grading_item_id,
-                                                      { comment: e.target.value }
+                                                      {
+                                                        comment: e.target.value,
+                                                      }
                                                     )
                                                   }
                                                   className="w-full border rounded-md px-2 py-1 text-sm"
@@ -731,10 +766,12 @@ export default function ExamGradingPage() {
                                               </div>
                                             </div>
 
-                                            {/* RIGHT (Hinweise) – nur rendern wenn offen */}
+                                            {/* RIGHT */}
                                             {hintOpen && (
                                               <div className="border rounded-lg bg-gray-50 p-3">
-                                                <div className="text-sm font-medium mb-2">Hinweise</div>
+                                                <div className="text-sm font-medium mb-2">
+                                                  Hinweise
+                                                </div>
                                                 <div className="text-sm text-gray-700 whitespace-pre-wrap">
                                                   {c.criterion_description?.trim()
                                                     ? c.criterion_description

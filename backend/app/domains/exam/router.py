@@ -1,28 +1,31 @@
 # app/domains/exam/router.py
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Literal
-
-from sqlalchemy.orm import Session, selectinload
-
-from sqlalchemy import select
 from datetime import datetime
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.deps import get_db
 from app.domains.auth.auth import get_current_user
+
 from app.domains.exam.models import (
-    GradingSheetDefinition,
-    GradingArea,
-    GradingCriterionDefinition,
+    GradeKeyEntry,
     Exam,
     ExamPart,
     ExamProtocol,
-    ExamGradingSheet,
-    ExamGradingItem,
-    ExpertDiscussionAreaDefinition,
-    ExamExpertDiscussionItem,
     ExamCheckin,
+    GradingSheetDefinition,
+    GradingArea,
+    GradingCriterionDefinition,
+    ExamGradingSheet,
 )
+
 from app.domains.exam.schemas import (
+    # GradeKey
+    ActiveGradeKeyOut,
+    GradeKeyEntryOut,
+    # Sheet definitions
     GradingSheetDefinitionOut,
     GradingSheetDefinitionCreate,
     GradingSheetDefinitionUpdate,
@@ -32,25 +35,20 @@ from app.domains.exam.schemas import (
     GradingCriterionOut,
     GradingCriterionCreate,
     GradingCriterionUpdate,
+    # Exam core
     ExamCheckinOut,
     ExamCheckinUpdate,
     ExamProtocolOut,
     ExamProtocolUpdate,
-    ExamPartOut,
     ExamStartIn,
     ExamStartOut,
     ExamWithPartsOut,
-    FinalSheetOut,
-    GradingSheetUpdateIn,
-    FinalSheetDecisionIn,
-    ExpertDiscussionAreaOut,
-    ExpertDiscussionAreaCreate,
-    ExpertDiscussionAreaUpdate,
-    ExpertDiscussionItemOut,
-    ExpertDiscussionItemCreate,
-    ExpertDiscussionItemUpdate,
+    # Member sheets / final sheet
     MemberGradingSheetOut,
     MemberGradingSheetViewOut,
+    GradingSheetUpdateIn,
+    FinalSheetOut,
+    FinalSheetDecisionIn,
 )
 
 from app.domains.exam.services.grading_service import (
@@ -60,22 +58,63 @@ from app.domains.exam.services.grading_service import (
     build_final_sheet_view,
     save_final_sheet_decisions,
     get_member_sheet_view,
+    _get_active_grade_key_version_id,
 )
 
 from app.domains.exam.services.parts_service import ensure_exam_parts_for_exam
 
-router = APIRouter(prefix="/exam", tags=["exam"])
+# ✅ Teil 2 Fachgespräch (V2-only) als Subrouter
+from app.domains.exam.expert_discussion_router import router as expert_discussion_router
 
-# ---- Grading Sheet Definitions ----
 
-@router.get(
-    "/subjects/{subject_id}/grading-sheets",
-    response_model=List[GradingSheetDefinitionOut],
-)
-def list_grading_sheets_for_subject(
+router = APIRouter(prefix="/exam", tags=["Exam"])
+router.include_router(expert_discussion_router)
+
+
+# ==================================================
+# Grade Key (IHK) API
+# ==================================================
+
+@router.get("/subjects/{subject_id}/grade-key/active", response_model=ActiveGradeKeyOut)
+def get_active_grade_key_version(
     subject_id: int,
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
+    """
+    Liefert die aktive grade_key_version_id für ein Subject.
+    """
+    try:
+        version_id = _get_active_grade_key_version_id(db, subject_id)
+        return ActiveGradeKeyOut(subject_id=subject_id, grade_key_version_id=version_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/grade-keys/{grade_key_version_id}/entries", response_model=List[GradeKeyEntryOut])
+def list_grade_key_entries(
+    grade_key_version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Liefert alle grade_key_entry Zeilen (0..100) für eine Version.
+    """
+    rows = (
+        db.query(GradeKeyEntry)
+        .filter(GradeKeyEntry.grade_key_version_id == grade_key_version_id)
+        .order_by(GradeKeyEntry.points_100.desc())
+        .all()
+    )
+    return rows
+
+
+# ==================================================
+# Grading Sheet Definitions (Teil 1)
+# ==================================================
+
+@router.get("/subjects/{subject_id}/grading-sheets", response_model=List[GradingSheetDefinitionOut])
+def list_grading_sheets_for_subject(subject_id: int, db: Session = Depends(get_db)):
     sheets = (
         db.query(GradingSheetDefinition)
         .filter(GradingSheetDefinition.subject_id == subject_id)
@@ -88,16 +127,8 @@ def list_grading_sheets_for_subject(
     return sheets
 
 
-@router.post(
-    "/subjects/{subject_id}/grading-sheets",
-    response_model=GradingSheetDefinitionOut,
-    status_code=201,
-)
-def create_grading_sheet_definition(
-    subject_id: int,
-    data: GradingSheetDefinitionCreate,
-    db: Session = Depends(get_db),
-):
+@router.post("/subjects/{subject_id}/grading-sheets", response_model=GradingSheetDefinitionOut, status_code=201)
+def create_grading_sheet_definition(subject_id: int, data: GradingSheetDefinitionCreate, db: Session = Depends(get_db)):
     sheet = GradingSheetDefinition(
         subject_id=subject_id,
         part_number=data.part_number,
@@ -106,6 +137,7 @@ def create_grading_sheet_definition(
         is_active=data.is_active,
         valid_from=data.valid_from,
         valid_to=data.valid_to,
+        variant=getattr(data, "variant", "presentation"),
     )
     db.add(sheet)
     db.commit()
@@ -113,20 +145,11 @@ def create_grading_sheet_definition(
     return sheet
 
 
-@router.get(
-    "/grading-sheets/{grading_sheet_definition_id}",
-    response_model=GradingSheetDefinitionOut,
-)
-def get_grading_sheet_definition(
-    grading_sheet_definition_id: int,
-    db: Session = Depends(get_db),
-):
+@router.get("/grading-sheets/{grading_sheet_definition_id}", response_model=GradingSheetDefinitionOut)
+def get_grading_sheet_definition(grading_sheet_definition_id: int, db: Session = Depends(get_db)):
     sheet = (
         db.query(GradingSheetDefinition)
-        .filter(
-            GradingSheetDefinition.grading_sheet_definition_id
-            == grading_sheet_definition_id
-        )
+        .filter(GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id)
         .first()
     )
     if not sheet:
@@ -134,10 +157,7 @@ def get_grading_sheet_definition(
     return sheet
 
 
-@router.put(
-    "/grading-sheets/{grading_sheet_definition_id}",
-    response_model=GradingSheetDefinitionOut,
-)
+@router.put("/grading-sheets/{grading_sheet_definition_id}", response_model=GradingSheetDefinitionOut)
 def update_grading_sheet_definition(
     grading_sheet_definition_id: int,
     data: GradingSheetDefinitionUpdate,
@@ -145,10 +165,7 @@ def update_grading_sheet_definition(
 ):
     sheet = (
         db.query(GradingSheetDefinition)
-        .filter(
-            GradingSheetDefinition.grading_sheet_definition_id
-            == grading_sheet_definition_id
-        )
+        .filter(GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id)
         .first()
     )
     if not sheet:
@@ -162,13 +179,9 @@ def update_grading_sheet_definition(
     return sheet
 
 
-# ---- Areas / Bewertungsbereiche ----
+# ---- Areas ----
 
-@router.post(
-    "/grading-sheets/{grading_sheet_definition_id}/areas",
-    response_model=GradingAreaOut,
-    status_code=201,
-)
+@router.post("/grading-sheets/{grading_sheet_definition_id}/areas", response_model=GradingAreaOut, status_code=201)
 def create_grading_area(
     grading_sheet_definition_id: int,
     data: GradingAreaCreate,
@@ -176,10 +189,7 @@ def create_grading_area(
 ):
     sheet = (
         db.query(GradingSheetDefinition)
-        .filter(
-            GradingSheetDefinition.grading_sheet_definition_id
-            == grading_sheet_definition_id
-        )
+        .filter(GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id)
         .first()
     )
     if not sheet:
@@ -198,20 +208,9 @@ def create_grading_area(
     return area
 
 
-@router.put(
-    "/grading-areas/{grading_area_id}",
-    response_model=GradingAreaOut,
-)
-def update_grading_area(
-    grading_area_id: int,
-    data: GradingAreaUpdate,
-    db: Session = Depends(get_db),
-):
-    area = (
-        db.query(GradingArea)
-        .filter(GradingArea.grading_area_id == grading_area_id)
-        .first()
-    )
+@router.put("/grading-areas/{grading_area_id}", response_model=GradingAreaOut)
+def update_grading_area(grading_area_id: int, data: GradingAreaUpdate, db: Session = Depends(get_db)):
+    area = db.query(GradingArea).filter(GradingArea.grading_area_id == grading_area_id).first()
     if not area:
         raise HTTPException(status_code=404, detail="Grading area not found")
 
@@ -225,21 +224,9 @@ def update_grading_area(
 
 # ---- Criteria ----
 
-@router.post(
-    "/grading-areas/{grading_area_id}/criteria",
-    response_model=GradingCriterionOut,
-    status_code=201,
-)
-def create_criterion_for_area(
-    grading_area_id: int,
-    data: GradingCriterionCreate,
-    db: Session = Depends(get_db),
-):
-    area = (
-        db.query(GradingArea)
-        .filter(GradingArea.grading_area_id == grading_area_id)
-        .first()
-    )
+@router.post("/grading-areas/{grading_area_id}/criteria", response_model=GradingCriterionOut, status_code=201)
+def create_criterion_for_area(grading_area_id: int, data: GradingCriterionCreate, db: Session = Depends(get_db)):
+    area = db.query(GradingArea).filter(GradingArea.grading_area_id == grading_area_id).first()
     if not area:
         raise HTTPException(status_code=404, detail="Grading area not found")
 
@@ -259,21 +246,11 @@ def create_criterion_for_area(
     return criterion
 
 
-@router.put(
-    "/grading-criteria/{grading_criterion_definition_id}",
-    response_model=GradingCriterionOut,
-)
-def update_criterion(
-    grading_criterion_definition_id: int,
-    data: GradingCriterionUpdate,
-    db: Session = Depends(get_db),
-):
+@router.put("/grading-criteria/{grading_criterion_definition_id}", response_model=GradingCriterionOut)
+def update_criterion(grading_criterion_definition_id: int, data: GradingCriterionUpdate, db: Session = Depends(get_db)):
     criterion = (
         db.query(GradingCriterionDefinition)
-        .filter(
-            GradingCriterionDefinition.grading_criterion_definition_id
-            == grading_criterion_definition_id
-        )
+        .filter(GradingCriterionDefinition.grading_criterion_definition_id == grading_criterion_definition_id)
         .first()
     )
     if not criterion:
@@ -281,17 +258,12 @@ def update_criterion(
 
     payload = data.model_dump(exclude_unset=True)
 
-    if "grading_area_id" in payload:
-        new_area_id = payload["grading_area_id"]
-        if new_area_id is not None:
-            area = (
-                db.query(GradingArea)
-                .filter(GradingArea.grading_area_id == new_area_id)
-                .first()
-            )
-            if not area:
-                raise HTTPException(status_code=404, detail="Target area not found")
-            criterion.grading_sheet_definition_id = area.grading_sheet_definition_id
+    # optional: grading_area_id wechseln
+    if "grading_area_id" in payload and payload["grading_area_id"] is not None:
+        target_area = db.query(GradingArea).filter(GradingArea.grading_area_id == payload["grading_area_id"]).first()
+        if not target_area:
+            raise HTTPException(status_code=404, detail="Target area not found")
+        criterion.grading_sheet_definition_id = target_area.grading_sheet_definition_id
 
     for field, value in payload.items():
         setattr(criterion, field, value)
@@ -300,89 +272,10 @@ def update_criterion(
     db.refresh(criterion)
     return criterion
 
-# ---- Expert Discussion Area Definitions (Fachgespräch-Vorlagen) ----
 
-
-@router.get(
-    "/subjects/{subject_id}/expert-discussion-areas",
-    response_model=List[ExpertDiscussionAreaOut],
-)
-def list_expert_discussion_areas_for_subject(
-    subject_id: int,
-    include_inactive: bool = False,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    query = db.query(ExpertDiscussionAreaDefinition).filter(
-        ExpertDiscussionAreaDefinition.subject_id == subject_id
-    )
-    if not include_inactive:
-        query = query.filter(ExpertDiscussionAreaDefinition.is_active == True)
-
-    areas = query.order_by(
-        ExpertDiscussionAreaDefinition.sort_order,
-        ExpertDiscussionAreaDefinition.title,
-    ).all()
-    return areas
-
-
-@router.post(
-    "/subjects/{subject_id}/expert-discussion-areas",
-    response_model=ExpertDiscussionAreaOut,
-    status_code=201,
-)
-def create_expert_discussion_area(
-    subject_id: int,
-    data: ExpertDiscussionAreaCreate,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    area = ExpertDiscussionAreaDefinition(
-        subject_id=subject_id,
-        code=data.code,
-        title=data.title,
-        description=data.description,
-        expected_answer=data.expected_answer,
-        sort_order=data.sort_order,
-        is_active=data.is_active,
-    )
-    db.add(area)
-    db.commit()
-    db.refresh(area)
-    return area
-
-
-@router.put(
-    "/expert-discussion-areas/{area_id}",
-    response_model=ExpertDiscussionAreaOut,
-)
-def update_expert_discussion_area(
-    area_id: int,
-    data: ExpertDiscussionAreaUpdate,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    area = (
-        db.query(ExpertDiscussionAreaDefinition)
-        .filter(
-            ExpertDiscussionAreaDefinition.expert_discussion_area_definition_id
-            == area_id
-        )
-        .first()
-    )
-    if not area:
-        raise HTTPException(status_code=404, detail="Expert discussion area not found")
-
-    for field, value in data.model_dump(exclude_unset=True).items():
-        setattr(area, field, value)
-
-    db.commit()
-    db.refresh(area)
-    return area
-
-
-# ---- Exam Parts & Protocol ----
-
+# ==================================================
+# Exam Parts & Core
+# ==================================================
 
 @router.get("/exams/{exam_id}/parts", response_model=ExamWithPartsOut)
 def get_exam_with_parts(exam_id: int, db: Session = Depends(get_db)):
@@ -405,11 +298,69 @@ def get_exam_with_parts(exam_id: int, db: Session = Depends(get_db)):
         exam_id=exam.exam_id,
         exam_type=exam.exam_type,
         status=exam.status,
+        subject_id=exam.subject_id,
         started_at=getattr(exam, "started_at", None),
         attendance_status=getattr(exam, "attendance_status", None),
         part1_mode=(part1.part_mode if part1 else None),
         parts=parts,
     )
+
+
+@router.post("/exams/{exam_id}/start", response_model=ExamStartOut)
+def start_exam(
+    exam_id: int,
+    payload: ExamStartIn,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    exam = db.execute(select(Exam).where(Exam.exam_id == exam_id).with_for_update()).scalar_one_or_none()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    if exam.status in ("done", "canceled"):
+        raise HTTPException(status_code=409, detail=f"Exam cannot be started (status={exam.status}).")
+
+    if exam.started_at is None:
+        exam.started_at = datetime.utcnow()
+
+    if exam.status == "planned":
+        exam.status = "in_progress"
+
+    if exam.attendance_status is None:
+        exam.attendance_status = "present"
+
+    # checkin row ensure
+    checkin = db.get(ExamCheckin, exam_id)
+    if checkin is None:
+        db.add(ExamCheckin(exam_id=exam_id))
+
+    ensure_exam_parts_for_exam(db, exam)
+    db.flush()
+
+    part1 = db.execute(
+        select(ExamPart).where(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1)
+    ).scalar_one_or_none()
+
+    if payload.part1_mode and part1 is not None:
+        part1.part_mode = payload.part1_mode
+
+    db.commit()
+    db.refresh(exam)
+    if part1:
+        db.refresh(part1)
+
+    return ExamStartOut(
+        exam_id=exam.exam_id,
+        status=exam.status,
+        started_at=exam.started_at,
+        attendance_status=exam.attendance_status,
+        part1_mode=(part1.part_mode if part1 else None),
+    )
+
+
+# ==================================================
+# Check-in
+# ==================================================
 
 @router.get("/exams/{exam_id}/checkin", response_model=ExamCheckinOut)
 def get_exam_checkin(
@@ -427,7 +378,6 @@ def get_exam_checkin(
         db.add(checkin)
         db.commit()
         db.refresh(checkin)
-
     return checkin
 
 
@@ -447,8 +397,7 @@ def update_exam_checkin(
         checkin = ExamCheckin(exam_id=exam_id)
         db.add(checkin)
 
-    payload = data.model_dump(exclude_unset=True)
-    for field, value in payload.items():
+    for field, value in data.model_dump(exclude_unset=True).items():
         setattr(checkin, field, value)
 
     db.commit()
@@ -456,27 +405,23 @@ def update_exam_checkin(
     return checkin
 
 
+# ==================================================
+# Protocol
+# ==================================================
+
 @router.get("/exams/{exam_id}/protocol", response_model=ExamProtocolOut)
-def get_exam_protocol(
-    exam_id: int,
-    db: Session = Depends(get_db),
-):
+def get_exam_protocol(exam_id: int, db: Session = Depends(get_db)):
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
 
-    protocol = (
-        db.query(ExamProtocol)
-        .filter(ExamProtocol.exam_id == exam.exam_id)
-        .first()
-    )
+    protocol = db.query(ExamProtocol).filter(ExamProtocol.exam_id == exam.exam_id).first()
     if not protocol:
         protocol = ExamProtocol(exam_id=exam.exam_id)
         db.add(protocol)
         db.commit()
         db.refresh(protocol)
 
-    # part_mode von Teil 1 für die Ausgabe mitziehen
     part1 = (
         db.query(ExamPart)
         .filter(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1)
@@ -488,27 +433,18 @@ def get_exam_protocol(
 
 
 @router.put("/exams/{exam_id}/protocol", response_model=ExamProtocolOut)
-def update_exam_protocol(
-    exam_id: int,
-    data: ExamProtocolUpdate,
-    db: Session = Depends(get_db),
-):
+def update_exam_protocol(exam_id: int, data: ExamProtocolUpdate, db: Session = Depends(get_db)):
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
 
-    protocol = (
-        db.query(ExamProtocol)
-        .filter(ExamProtocol.exam_id == exam.exam_id)
-        .first()
-    )
+    protocol = db.query(ExamProtocol).filter(ExamProtocol.exam_id == exam.exam_id).first()
     if not protocol:
         protocol = ExamProtocol(exam_id=exam.exam_id)
         db.add(protocol)
 
-    # Partial-Update der Protokollfelder
     payload = data.model_dump(exclude_unset=True)
-    part1_mode = payload.pop("part1_mode", None)  # separat behandeln
+    part1_mode = payload.pop("part1_mode", None)
 
     for field, value in payload.items():
         setattr(protocol, field, value)
@@ -516,7 +452,6 @@ def update_exam_protocol(
     db.commit()
     db.refresh(protocol)
 
-    # Falls part1_mode gesetzt ist: Teil 1 anlegen/aktualisieren
     if part1_mode:
         ensure_exam_parts_for_exam(db, exam)
         part1 = (
@@ -529,136 +464,23 @@ def update_exam_protocol(
             db.commit()
             db.refresh(part1)
 
-    # Ausgabe vorbereiten inkl. part1_mode
     out = ExamProtocolOut.model_validate(protocol)
-    out.part1_mode = part1_mode or getattr(
-        db.query(ExamPart)
-        .filter(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1)
-        .first(),
-        "part_mode",
-        None,
-    )
+    out.part1_mode = part1_mode
     return out
 
-# ---- Expert Discussion Items (Fachgespräch / Protokollzeilen) ----
 
+# ==================================================
+# Member Grading Sheets (Teil 1)
+# ==================================================
 
-@router.get(
-    "/exam-parts/{exam_part_id}/expert-discussion-items",
-    response_model=List[ExpertDiscussionItemOut],
-)
-def list_expert_discussion_items(
-    exam_part_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    items = (
-        db.query(ExamExpertDiscussionItem)
-        .filter(ExamExpertDiscussionItem.exam_part_id == exam_part_id)
-        .order_by(ExamExpertDiscussionItem.exam_expert_discussion_item_id)
-        .all()
-    )
-    return items
-
-
-@router.post(
-    "/exam-parts/{exam_part_id}/expert-discussion-items",
-    response_model=ExpertDiscussionItemOut,
-    status_code=201,
-)
-def create_expert_discussion_item(
-    exam_part_id: int,
-    data: ExpertDiscussionItemCreate,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    # Optional: prüfen, ob exam_part existiert
-    part = db.query(ExamPart).filter(ExamPart.exam_part_id == exam_part_id).first()
-    if not part:
-        raise HTTPException(status_code=404, detail="Exam part not found")
-
-    item = ExamExpertDiscussionItem(
-        exam_part_id=exam_part_id,
-        expert_discussion_area_definition_id=data.expert_discussion_area_definition_id,
-        area_title=data.area_title,
-        candidate_statement=data.candidate_statement,
-        examiner_comment=data.examiner_comment,
-        grade=data.grade,
-        points=data.points,
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return item
-
-
-@router.put(
-    "/expert-discussion-items/{item_id}",
-    response_model=ExpertDiscussionItemOut,
-)
-def update_expert_discussion_item(
-    item_id: int,
-    data: ExpertDiscussionItemUpdate,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    item = (
-        db.query(ExamExpertDiscussionItem)
-        .filter(ExamExpertDiscussionItem.exam_expert_discussion_item_id == item_id)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Expert discussion item not found")
-
-    for field, value in data.model_dump(exclude_unset=True).items():
-        setattr(item, field, value)
-
-    db.commit()
-    db.refresh(item)
-    return item
-
-
-@router.delete(
-    "/expert-discussion-items/{item_id}",
-    status_code=204,
-)
-def delete_expert_discussion_item(
-    item_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    item = (
-        db.query(ExamExpertDiscussionItem)
-        .filter(ExamExpertDiscussionItem.exam_expert_discussion_item_id == item_id)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Expert discussion item not found")
-
-    db.delete(item)
-    db.commit()
-    return
-
-
-# ---- Member Grading Sheets ----
-
-
-@router.get(
-    "/exam-parts/{exam_part_id}/my-grading-sheet",
-    response_model=MemberGradingSheetOut,
-)
+@router.get("/exam-parts/{exam_part_id}/my-grading-sheet", response_model=MemberGradingSheetOut)
 def get_my_grading_sheet(
     exam_part_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    sheet = get_or_create_member_sheet(
-        db=db,
-        exam_part_id=exam_part_id,
-        examiner_id=current_user.user_id,
-    )
+    sheet = get_or_create_member_sheet(db=db, exam_part_id=exam_part_id, examiner_id=current_user.user_id)
 
-    # ✅ WICHTIG: sheet inkl. items sauber neu laden (eager)
     sheet = db.execute(
         select(ExamGradingSheet)
         .where(ExamGradingSheet.exam_grading_sheet_id == sheet.exam_grading_sheet_id)
@@ -667,20 +489,15 @@ def get_my_grading_sheet(
 
     return sheet
 
-@router.get(
-    "/exam-parts/{exam_part_id}/my-grading-sheet/view",
-    response_model=MemberGradingSheetViewOut,
-)
-def get_my_grading_sheet_view(
+
+@router.get("/exam-parts/{exam_part_id}/my-grading-sheet/view", response_model=MemberGradingSheetViewOut)
+def get_my_grading_sheet_view_endpoint(
     exam_part_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return get_member_sheet_view(
-        db=db,
-        exam_part_id=exam_part_id,
-        examiner_id=current_user.user_id,
-    )
+    return get_member_sheet_view(db=db, exam_part_id=exam_part_id, examiner_id=current_user.user_id)
+
 
 @router.put("/grading-sheets/{sheet_id}/items")
 def update_sheet_items_endpoint(
@@ -689,160 +506,41 @@ def update_sheet_items_endpoint(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    Aktualisiert ein Member-Sheet des aktuellen Prüfers.
-    Nutzt update_member_sheet() aus grading_service.
-    """
-    # Service kümmert sich um Ownership- und Typ-Check (member sheet)
-    _ = update_member_sheet(
-        db=db,
-        sheet_id=sheet_id,
-        examiner_id=current_user.user_id,
-        payload=payload,
-    )
+    _ = update_member_sheet(db=db, sheet_id=sheet_id, examiner_id=current_user.user_id, payload=payload)
     return {"status": "ok"}
 
 
 @router.post("/grading-sheets/{sheet_id}/submit")
-def submit_my_sheet(
+def submit_my_sheet_endpoint(
     sheet_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    try:
-        sheet, all_submitted = submit_member_sheet(
-            db, sheet_id=sheet_id, examiner_id=current_user.user_id
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+    sheet, all_submitted = submit_member_sheet(db, sheet_id=sheet_id, examiner_id=current_user.user_id)
     return {"status": "ok", "all_submitted_for_part": all_submitted}
 
 
-# ---- Final Grading Sheet (Ausschuss) ----
+# ==================================================
+# Final Grading Sheet (Ausschuss) - Konsolidierung Teil 1
+# ==================================================
 
-
-@router.get(
-    "/exam-parts/{exam_part_id}/final-grading-sheet",
-    response_model=FinalSheetOut,
-)
-def get_final_sheet_view(
+@router.get("/exam-parts/{exam_part_id}/final-grading-sheet", response_model=FinalSheetOut)
+def get_final_sheet_view_endpoint(
     exam_part_id: int,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    try:
-        data = build_final_sheet_view(db, exam_part_id=exam_part_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+    data = build_final_sheet_view(db, exam_part_id=exam_part_id)
     return data
 
-@router.put(
-    "/exam-parts/{exam_part_id}/final-grading-sheet",
-    response_model=FinalSheetOut,
-)
-def update_final_sheet(
+
+@router.put("/exam-parts/{exam_part_id}/final-grading-sheet", response_model=FinalSheetOut)
+def update_final_sheet_endpoint(
     exam_part_id: int,
     payload: FinalSheetDecisionIn,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    Schreibt die final beschlossenen Punkte/Noten/Kommentare in den
-    Ausschuss-Bogen (sheet_type='final') und gibt den aggregierten View zurück.
-
-    TODO (später): Rollen-Check (z. B. nur Vorsitz / berechtigte Prüfer).
-    """
-    try:
-        _ = save_final_sheet_decisions(
-            db=db,
-            exam_part_id=exam_part_id,
-            decisions=payload,
-        )
-        data = build_final_sheet_view(db, exam_part_id=exam_part_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+    _ = save_final_sheet_decisions(db=db, exam_part_id=exam_part_id, decisions=payload)
+    data = build_final_sheet_view(db, exam_part_id=exam_part_id)
     return data
-
-@router.post("/exams/{exam_id}/start", response_model=ExamStartOut)
-def start_exam(
-    exam_id: int,
-    payload: ExamStartIn,   # body required
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    try:
-        exam = db.execute(
-            select(Exam).where(Exam.exam_id == exam_id).with_for_update()
-        ).scalar_one_or_none()
-
-        if not exam:
-            raise HTTPException(status_code=404, detail="Exam not found")
-
-        if exam.status in ("done", "canceled"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Exam cannot be started (status={exam.status})."
-            )
-
-        # started_at setzen
-        if exam.started_at is None:
-            exam.started_at = datetime.utcnow()
-
-        # status setzen
-        if exam.status == "planned":
-            exam.status = "in_progress"
-
-        # attendance_status: beim Start default auf present setzen (wenn leer)
-        if exam.attendance_status is None:
-            exam.attendance_status = "present"
-
-        # checkin upsert (idempotent)
-        checkin = db.get(ExamCheckin, exam_id)
-        if checkin is None:
-            db.add(ExamCheckin(exam_id=exam_id))
-
-        # Parts sicherstellen (idempotent)
-        ensure_exam_parts_for_exam(db, exam)
-        db.flush()  # 👈 wichtig, damit newly created parts jetzt sichtbar sind
-
-        # Teil 1 holen
-        part1 = db.execute(
-            select(ExamPart).where(
-                ExamPart.exam_id == exam.exam_id,
-                ExamPart.part_number == 1
-            )
-        ).scalar_one_or_none()
-
-        # part_mode setzen, falls mitgegeben
-        if payload.part1_mode:
-            if part1 is None:
-                raise HTTPException(status_code=500, detail="Part 1 not found after ensure_exam_parts_for_exam")
-            part1.part_mode = payload.part1_mode
-
-        db.commit()
-
-        # neu laden (damit Response garantiert DB-Stand ist)
-        db.refresh(exam)
-        if part1:
-            db.refresh(part1)
-
-        return ExamStartOut(
-            exam_id=exam.exam_id,
-            status=exam.status,
-            started_at=exam.started_at,
-            attendance_status=exam.attendance_status,
-            part1_mode=(part1.part_mode if part1 else None),
-        )
-
-    except HTTPException:
-        db.rollback()
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"start_exam failed: {str(e)}")
-
-
-# End of file

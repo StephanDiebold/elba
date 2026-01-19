@@ -27,7 +27,6 @@ function toApiError(method: string, path: string, err: unknown): ApiError {
   }
 
   const statusText = (ax?.response as any)?.statusText ?? (status ? "Error" : "Network Error");
-
   return new ApiError(`[${method} ${path}] ${status} ${statusText}`, status, body);
 }
 
@@ -60,10 +59,20 @@ async function _putJson<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
+async function _delete(path: string): Promise<void> {
+  try {
+    await httpClient.delete(path);
+  } catch (err) {
+    throw toApiError("DELETE", path, err);
+  }
+}
+
 /* ==================================================
  *   EXAM API
  *   Backend-Router-Prefix: /exam
  * ================================================== */
+
+const EXAM_BASE = "/exam";
 
 export type ExamType = "aevo" | "wfw" | "it" | "custom";
 
@@ -93,7 +102,7 @@ export interface ExamStartOut {
   part1_mode: Part1Mode | null;
 }
 
-/* ---------- Protokoll (Zeiten/Signaturen) ---------- */
+/* ---------- Protokoll ---------- */
 
 export interface ExamProtocol {
   exam_protocol_id: number;
@@ -102,12 +111,10 @@ export interface ExamProtocol {
   start_time?: string | null; // ISO
   end_time?: string | null; // ISO
 
-  // Achtung: Backend kann das evtl. (noch) nicht liefern – optional halten
   signed_by_chair?: boolean;
   signed_by_examiner_2?: boolean;
   signed_by_examiner_3?: boolean;
 
-  // kommt bei dir im Router aus part1.part_mode (nicht aus exam_protocol)
   part1_mode?: Part1Mode | null;
 }
 
@@ -119,7 +126,6 @@ export interface ExamProtocolUpdatePayload {
   signed_by_examiner_2?: boolean;
   signed_by_examiner_3?: boolean;
 
-  // optional, weil dein PUT /protocol part1_mode separat auf exam_part schreibt
   part1_mode?: Part1Mode | null;
 }
 
@@ -159,6 +165,8 @@ export interface ExamWithParts {
   exam_type: ExamType;
   status: string;
 
+  subject_id?: number | null;
+
   started_at?: string | null;
   attendance_status?: string | null;
   part1_mode?: Part1Mode | null;
@@ -181,8 +189,6 @@ export interface GradingItem {
 export interface GradingSheet {
   exam_grading_sheet_id: number;
   exam_part_id: number;
-
-  // kann im Backend existieren, muss aber nicht zwingend im Response sein -> optional halten
   grading_sheet_definition_id?: number;
 
   examiner_id: number | null;
@@ -207,7 +213,7 @@ export interface GradingSheetUpdate {
   items: GradingItemUpdate[];
 }
 
-/* ---------- Member-Sheet (view: grouped by grading_area) ---------- */
+/* ---------- Member-Sheet (view) ---------- */
 
 export interface MemberCriterionItem {
   exam_grading_item_id: number;
@@ -284,7 +290,6 @@ export interface FinalSheet {
 }
 
 export interface FinalCriterionDecisionIn {
-  /** criterion_id == grading_criterion_definition_id */
   criterion_id: number;
   decided_points?: number | null;
   decided_grade?: number | null;
@@ -295,9 +300,21 @@ export interface FinalSheetDecisionIn {
   criteria: FinalCriterionDecisionIn[];
 }
 
-/* ---------- API-Funktionen ---------- */
+/* ==================================================
+ *   CORE API-Funktionen (ExamStartPanel/ExamGradingPage)
+ * ================================================== */
 
-const EXAM_BASE = "/exam";
+/** Exam inkl. Parts */
+export async function fetchExamWithParts(examId: number): Promise<ExamWithParts> {
+  return _getJson<ExamWithParts>(`${EXAM_BASE}/exams/${examId}/parts`);
+}
+
+/** Prüfung starten */
+export async function startExam(examId: number, part1_mode?: Part1Mode): Promise<ExamStartOut> {
+  return _postJson<ExamStartOut>(`${EXAM_BASE}/exams/${examId}/start`, {
+    part1_mode: part1_mode ?? null,
+  });
+}
 
 /** Check-in holen */
 export async function fetchExamCheckin(examId: number): Promise<ExamCheckin> {
@@ -312,24 +329,12 @@ export async function updateExamCheckin(
   return _putJson<ExamCheckin>(`${EXAM_BASE}/exams/${examId}/checkin`, payload);
 }
 
-/** Exam inkl. automatisch angelegter Parts */
-export async function fetchExamWithParts(examId: number): Promise<ExamWithParts> {
-  return _getJson<ExamWithParts>(`${EXAM_BASE}/exams/${examId}/parts`);
-}
-
-/** Prüfung starten (setzt started_at/status; optional part1_mode) */
-export async function startExam(examId: number, part1_mode?: Part1Mode): Promise<ExamStartOut> {
-  return _postJson<ExamStartOut>(`${EXAM_BASE}/exams/${examId}/start`, {
-    part1_mode: part1_mode ?? null,
-  });
-}
-
 /** Protokoll holen */
 export async function fetchExamProtocol(examId: number): Promise<ExamProtocol> {
   return _getJson<ExamProtocol>(`${EXAM_BASE}/exams/${examId}/protocol`);
 }
 
-/** Protokoll aktualisieren (Pre-Check + Zeiten + part1_mode) */
+/** Protokoll aktualisieren */
 export async function updateExamProtocol(
   examId: number,
   payload: ExamProtocolUpdatePayload
@@ -337,27 +342,24 @@ export async function updateExamProtocol(
   return _putJson<ExamProtocol>(`${EXAM_BASE}/exams/${examId}/protocol`, payload);
 }
 
-/** Member-Sheet (raw) für aktuellen User & Prüfungsteil */
+/** Member-Sheet (raw) */
 export async function fetchMyGradingSheet(examPartId: number): Promise<GradingSheet> {
   return _getJson<GradingSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/my-grading-sheet`);
 }
 
-/** Member-Sheet View (grouped by grading_area) */
+/** Member-Sheet View */
 export async function fetchMyGradingSheetView(examPartId: number): Promise<MemberGradingSheetView> {
   return _getJson<MemberGradingSheetView>(
     `${EXAM_BASE}/exam-parts/${examPartId}/my-grading-sheet/view`
   );
 }
 
-/** Items (Noten/Punkte/Kommentare) auf einem Sheet speichern */
-export async function updateGradingSheetItemsApi(
-  sheetId: number,
-  payload: GradingSheetUpdate
-): Promise<void> {
+/** Items auf einem Sheet speichern */
+export async function updateGradingSheetItemsApi(sheetId: number, payload: GradingSheetUpdate): Promise<void> {
   await _putJson<{ status: string }>(`${EXAM_BASE}/grading-sheets/${sheetId}/items`, payload);
 }
 
-/** Member-Sheet einreichen (Status -> submitted) */
+/** Member-Sheet einreichen */
 export async function submitMyGradingSheet(
   sheetId: number
 ): Promise<{ status: string; all_submitted_for_part: boolean }> {
@@ -367,12 +369,12 @@ export async function submitMyGradingSheet(
   );
 }
 
-/** Konsolidiertes Final-Sheet für einen Prüfungsteil */
+/** Final-Sheet */
 export async function fetchFinalGradingSheet(examPartId: number): Promise<FinalSheet> {
   return _getJson<FinalSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`);
 }
 
-/** Final-Sheet Entscheidungen schreiben (Ausschuss-Bogen) */
+/** Final-Sheet Entscheidungen */
 export async function updateFinalGradingSheet(
   examPartId: number,
   payload: FinalSheetDecisionIn
@@ -380,4 +382,169 @@ export async function updateFinalGradingSheet(
   return _putJson<FinalSheet>(`${EXAM_BASE}/exam-parts/${examPartId}/final-grading-sheet`, payload);
 }
 
-// End of src/lib/api/exam.api.ts
+/* ==================================================
+ *   Expert Discussion (Teil 2 Fachgespräch) – Option A ONLY
+ *   examId-basiert, Server macht Lazy-Init + Umrechnung
+ *   Backend: /exam/exams/{exam_id}/expert-discussion/...
+ * ================================================== */
+
+export type AreaScoreUpdateIn = {
+  mode: "points" | "grades";
+  points_100?: number | null;
+  grade?: number | null;
+};
+
+export interface ExpertDiscussionBundleOut {
+  exam_part_id: number;
+  exam_id: number;
+  subject_id: number;
+  areas: ExamExpertDiscussionAreaOut[];
+}
+
+export interface ExamExpertDiscussionItemOut {
+  exam_expert_discussion_item_id: number;
+  exam_expert_discussion_area_id: number;
+
+  template_item_id?: number | null;
+  question_text?: string | null;
+  answer_text?: string | null;
+  examiner_comment?: string | null;
+
+  sort_order: number;
+}
+
+export interface ExamExpertDiscussionAreaOut {
+  exam_expert_discussion_area_id: number;
+  exam_part_id: number;
+
+  expert_discussion_area_id: number;
+  area_title: string;
+
+  description?: string | null;
+  expected_answer?: string | null;
+
+  points_100?: number | null;
+  grade?: number | null;
+
+  items: ExamExpertDiscussionItemOut[];
+}
+
+export interface ExamExpertDiscussionItemCreateIn {
+  template_item_id?: number | null;
+  question_text?: string | null;
+  answer_text?: string | null;
+  examiner_comment?: string | null;
+  sort_order?: number | null;
+}
+
+export interface ExamExpertDiscussionItemUpdateIn extends ExamExpertDiscussionItemCreateIn {}
+
+/** Bundle laden (serverseitig lazy init) */
+export async function fetchExpertDiscussionBundle(
+  examId: number
+): Promise<ExpertDiscussionBundleOut> {
+  return _getJson<ExpertDiscussionBundleOut>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion`
+  );
+}
+
+/** Area Score updaten (Server rechnet um) */
+export async function updateExpertDiscussionAreaScore(
+  examId: number,
+  examAreaId: number,
+  payload: AreaScoreUpdateIn
+): Promise<ExamExpertDiscussionAreaOut> {
+  return _putJson<ExamExpertDiscussionAreaOut>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}`,
+    payload
+  );
+}
+
+/** Item anlegen */
+export async function createExpertDiscussionItem(
+  examId: number,
+  examAreaId: number,
+  payload: ExamExpertDiscussionItemCreateIn
+): Promise<ExamExpertDiscussionItemOut> {
+  return _postJson<ExamExpertDiscussionItemOut>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}/items`,
+    payload
+  );
+}
+
+/** Item updaten */
+export async function updateExpertDiscussionItem(
+  examId: number,
+  itemId: number,
+  payload: ExamExpertDiscussionItemUpdateIn
+): Promise<ExamExpertDiscussionItemOut> {
+  return _putJson<ExamExpertDiscussionItemOut>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/items/${itemId}`,
+    payload
+  );
+}
+
+/** Item löschen */
+export async function deleteExpertDiscussionItem(
+  examId: number,
+  itemId: number
+): Promise<void> {
+  return _delete(`${EXAM_BASE}/exams/${examId}/expert-discussion/items/${itemId}`);
+}
+
+/** Teil 2 einreichen */
+export async function submitExpertDiscussion(examId: number): Promise<{ ok: boolean }> {
+  return _postJson<{ ok: boolean }>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/submit`,
+    {}
+  );
+}
+
+
+/* ==================================================
+ *   Grade Key (IHK)
+ * ================================================== */
+
+export interface ActiveGradeKeyOut {
+  subject_id: number;
+  grade_key_version_id: number;
+}
+
+export interface GradeKeyEntryOut {
+  grade_key_entry_id: number;
+  grade_key_version_id: number;
+  points_100: number;
+  grade_decimal: number;
+  grade_letter?: string | null;
+  grade_text?: string | null;
+}
+
+/** Active Grade Key Version je Subject */
+export async function fetchActiveGradeKey(subjectId: number): Promise<ActiveGradeKeyOut> {
+  return _getJson<ActiveGradeKeyOut>(`${EXAM_BASE}/subjects/${subjectId}/grade-key/active`);
+}
+
+/** Grade Key Entries je Version */
+export async function fetchGradeKeyEntries(gradeKeyVersionId: number): Promise<GradeKeyEntryOut[]> {
+  return _getJson<GradeKeyEntryOut[]>(`${EXAM_BASE}/grade-keys/${gradeKeyVersionId}/entries`);
+}
+
+/** Convenience: Active Grade Key + Entries in einem Call (FE-seitig gebündelt) */
+export interface ActiveGradeKeyWithEntriesOut {
+  subject_id: number;
+  grade_key_version_id: number;
+  entries: GradeKeyEntryOut[];
+}
+
+export async function fetchActiveGradeKeyWithEntries(
+  subjectId: number
+): Promise<ActiveGradeKeyWithEntriesOut> {
+  const active = await fetchActiveGradeKey(subjectId);
+  const entries = await fetchGradeKeyEntries(active.grade_key_version_id);
+  return {
+    subject_id: active.subject_id,
+    grade_key_version_id: active.grade_key_version_id,
+    entries,
+  };
+}
+// end of src/lib/api/exam.api.ts

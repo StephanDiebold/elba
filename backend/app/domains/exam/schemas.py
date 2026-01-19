@@ -93,6 +93,21 @@ class GradingSheetDefinitionOut(GradingSheetDefinitionBase):
     areas: List[GradingAreaOut] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
+class GradeKeyEntryOut(BaseModel):
+    grade_key_entry_id: int
+    grade_key_version_id: int
+    points_100: int
+    grade_decimal: float
+    grade_letter: Optional[str] = None
+    grade_text: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ActiveGradeKeyOut(BaseModel):
+    subject_id: int
+    grade_key_version_id: int
 
 # =============================================================================
 # Expert Discussion Area Definitions (Fachgespräch-Vorlagen)
@@ -208,6 +223,7 @@ class ExamWithPartsOut(BaseModel):
     exam_id: int
     exam_type: str
     status: str
+    subject_id: Optional[int] = None
 
     started_at: Optional[datetime] = None
     attendance_status: Optional[str] = None

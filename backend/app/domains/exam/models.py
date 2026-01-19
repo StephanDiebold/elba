@@ -1,20 +1,22 @@
 # app/domains/exam/models.py
 
+from datetime import datetime
+
 from sqlalchemy import (
+    Boolean,
     Column,
+    Date,
+    DateTime,
+    DECIMAL,
+    Enum as SAEnum,
+    ForeignKey,
     Integer,
     String,
     Text,
-    DateTime,
-    Date,
-    DECIMAL,
-    ForeignKey,
-    Boolean,
-    Enum as SAEnum,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
-from datetime import datetime
-from sqlalchemy.sql import func
+
 from app.core.database import Base
 
 
@@ -25,23 +27,14 @@ class Exam(Base):
     __tablename__ = "exam"
 
     exam_id = Column(Integer, primary_key=True, index=True)
-    # subject_id = Column(Integer, ForeignKey("subject.subject_id"), nullable=True)
+    subject_id = Column(Integer, ForeignKey("subject.subject_id"), nullable=True, index=True)
 
     candidate_id = Column(Integer, ForeignKey("candidate.candidate_id"), nullable=False)
     exam_day_id = Column(Integer, ForeignKey("exam_day.exam_day_id"), nullable=False)
-    exam_slot_id = Column(
-        Integer,
-        ForeignKey("exam_slot.exam_slot_id"),
-        nullable=False,
-        unique=True,
-    )
+    exam_slot_id = Column(Integer, ForeignKey("exam_slot.exam_slot_id"), nullable=False, unique=True)
 
-    exam_day_team_id = Column(
-        Integer,
-        ForeignKey("exam_day_team.exam_day_team_id"),
-        nullable=True,
-    )
-    
+    exam_day_team_id = Column(Integer, ForeignKey("exam_day_team.exam_day_team_id"), nullable=True)
+
     exam_type = Column(
         SAEnum("aevo", "wfw", "it", "custom", name="exam_type_enum"),
         nullable=False,
@@ -54,17 +47,20 @@ class Exam(Base):
         default="planned",
     )
 
+    started_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+
+    attendance_status = Column(
+        SAEnum("present", "no_show_excused", "no_show_unexcused", name="attendance_status_enum"),
+        nullable=True,
+    )
+
     final_points = Column(DECIMAL(5, 2))
     final_grade = Column(DECIMAL(3, 1))
     notes = Column(Text)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     parts = relationship(
         "ExamPart",
@@ -87,14 +83,6 @@ class Exam(Base):
         cascade="all, delete-orphan",
     )
 
-    started_at = Column(DateTime, nullable=True)
-    ended_at = Column(DateTime, nullable=True)
-
-    attendance_status = Column(
-        SAEnum("present", "no_show_excused", "no_show_unexcused", name="attendance_status_enum"),
-        nullable=True,
-    )
-
 
 # ==========================
 # CHECK-IN (separat, MVP)
@@ -102,12 +90,7 @@ class Exam(Base):
 class ExamCheckin(Base):
     __tablename__ = "exam_checkin"
 
-    # 1:1 zu Exam, PK ist exam_id
-    exam_id = Column(
-        Integer,
-        ForeignKey("exam.exam_id"),
-        primary_key=True,
-    )
+    exam_id = Column(Integer, ForeignKey("exam.exam_id"), primary_key=True)
 
     identity_checked = Column(Boolean, nullable=False, default=False)
     fit_for_exam_confirmed = Column(Boolean, nullable=False, default=False)
@@ -119,14 +102,8 @@ class ExamCheckin(Base):
     notes = Column(Text, nullable=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationship back to exam (optional, aber praktisch)
     exam = relationship("Exam", back_populates="checkin", uselist=False)
 
 
@@ -150,13 +127,12 @@ class ExamPart(Base):
     grade = Column(DECIMAL(3, 1))
     protocol_text = Column(Text)
 
+    # Teil 2 Ergebnisfelder (Fachgespräch)
+    expert_discussion_points_100 = Column(DECIMAL(6, 2), nullable=True)
+    expert_discussion_grade = Column(DECIMAL(3, 1), nullable=True)
+
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     exam = relationship("Exam", back_populates="parts")
 
@@ -166,12 +142,124 @@ class ExamPart(Base):
         cascade="all, delete-orphan",
     )
 
-    expert_discussion_items = relationship(
-        "ExamExpertDiscussionItem",
+    # Teil 2 (V2-final): Areas hängen direkt am Part
+    expert_discussion_areas = relationship(
+        "ExamExpertDiscussionArea",
         back_populates="exam_part",
         cascade="all, delete-orphan",
-        order_by="ExamExpertDiscussionItem.exam_expert_discussion_item_id",
+        order_by="ExamExpertDiscussionArea.exam_expert_discussion_area_id",
     )
+
+
+# ==========================
+# EXPERT DISCUSSION (Teil 2) - Templates
+# ==========================
+class ExpertDiscussionArea(Base):
+    __tablename__ = "expert_discussion_area"
+
+    area_id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subject.subject_id"), nullable=False, index=True)
+
+    code = Column(String(50), nullable=True)
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    expected_answer = Column(Text, nullable=True)
+
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    items = relationship(
+        "ExpertDiscussionItem",
+        back_populates="area",
+        cascade="all, delete-orphan",
+        order_by="ExpertDiscussionItem.sort_order",
+    )
+
+
+class ExpertDiscussionItem(Base):
+    __tablename__ = "expert_discussion_item"
+
+    item_id = Column(Integer, primary_key=True, index=True)
+    area_id = Column(Integer, ForeignKey("expert_discussion_area.area_id"), nullable=False, index=True)
+
+    item_text = Column(String(500), nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    area = relationship("ExpertDiscussionArea", back_populates="items")
+
+
+# ==========================
+# EXPERT DISCUSSION (Teil 2) - Exam Instances
+# ==========================
+class ExamExpertDiscussionArea(Base):
+    __tablename__ = "exam_expert_discussion_area"
+    __table_args__ = (
+        UniqueConstraint("exam_part_id", "expert_discussion_area_id", name="uq_exam_part_area"),
+    )
+
+    exam_expert_discussion_area_id = Column(Integer, primary_key=True, index=True)
+
+    exam_part_id = Column(Integer, ForeignKey("exam_part.exam_part_id"), nullable=False, index=True)
+    expert_discussion_area_id = Column(
+        Integer, ForeignKey("expert_discussion_area.area_id"), nullable=False, index=True
+    )
+
+    area_title = Column(String(255), nullable=False)
+
+    points_100 = Column(DECIMAL(5, 2), nullable=True)
+    grade = Column(DECIMAL(3, 1), nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    exam_part = relationship("ExamPart", back_populates="expert_discussion_areas")
+    template_area = relationship("ExpertDiscussionArea")
+
+    items = relationship(
+        "ExamExpertDiscussionItem",
+        back_populates="area",
+        cascade="all, delete-orphan",
+        order_by="ExamExpertDiscussionItem.sort_order",
+    )
+
+
+class ExamExpertDiscussionItem(Base):
+    __tablename__ = "exam_expert_discussion_item"
+
+    exam_expert_discussion_item_id = Column(Integer, primary_key=True, index=True)
+
+    exam_expert_discussion_area_id = Column(
+        Integer,
+        ForeignKey("exam_expert_discussion_area.exam_expert_discussion_area_id"),
+        nullable=False,
+        index=True,
+    )
+
+    template_item_id = Column(
+        Integer,
+        ForeignKey("expert_discussion_item.item_id"),
+        nullable=True,
+        index=True,
+    )
+
+    question_text = Column(String(500), nullable=False)
+    answer_text = Column(Text, nullable=True)
+    examiner_comment = Column(Text, nullable=True)
+
+    sort_order = Column(Integer, nullable=False, default=1)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    area = relationship("ExamExpertDiscussionArea", back_populates="items")
+    template_item = relationship("ExpertDiscussionItem")
 
 
 # ==========================
@@ -192,12 +280,7 @@ class GradingSheetDefinition(Base):
     valid_to = Column(Date)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     areas = relationship(
         "GradingArea",
@@ -232,17 +315,9 @@ class GradingArea(Base):
     is_active = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    sheet_definition = relationship(
-        "GradingSheetDefinition",
-        back_populates="areas",
-    )
+    sheet_definition = relationship("GradingSheetDefinition", back_populates="areas")
 
     criteria = relationship(
         "GradingCriterionDefinition",
@@ -266,11 +341,7 @@ class GradingCriterionDefinition(Base):
         nullable=False,
     )
 
-    grading_area_id = Column(
-        Integer,
-        ForeignKey("grading_area.grading_area_id"),
-        nullable=True,
-    )
+    grading_area_id = Column(Integer, ForeignKey("grading_area.grading_area_id"), nullable=True)
 
     criterion_number = Column(Integer, nullable=False)
     title = Column(String(255), nullable=False)
@@ -281,90 +352,12 @@ class GradingCriterionDefinition(Base):
     is_active = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    sheet_definition = relationship(
-        "GradingSheetDefinition",
-        back_populates="criteria",
-    )
+    sheet_definition = relationship("GradingSheetDefinition", back_populates="criteria")
+    area = relationship("GradingArea", back_populates="criteria")
 
-    area = relationship(
-        "GradingArea",
-        back_populates="criteria",
-    )
-
-    exam_items = relationship(
-        "ExamGradingItem",
-        back_populates="criterion",
-    )
-
-
-# ==========================
-# EXPERT DISCUSSION (Fachgespräch)
-# ==========================
-class ExpertDiscussionAreaDefinition(Base):
-    __tablename__ = "expert_discussion_area_definition"
-
-    expert_discussion_area_definition_id = Column(Integer, primary_key=True, index=True)
-    subject_id = Column(Integer, ForeignKey("subject.subject_id"), nullable=False)
-
-    code = Column(String(50))
-    title = Column(String(255), nullable=False)
-    description = Column(Text)
-    expected_answer = Column(Text)
-
-    sort_order = Column(Integer, nullable=False, default=0)
-    is_active = Column(Boolean, nullable=False, default=True)
-
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
-
-
-class ExamExpertDiscussionItem(Base):
-    __tablename__ = "exam_expert_discussion_item"
-
-    exam_expert_discussion_item_id = Column(Integer, primary_key=True, index=True)
-
-    exam_part_id = Column(
-        Integer,
-        ForeignKey("exam_part.exam_part_id"),
-        nullable=False,
-    )
-
-    expert_discussion_area_definition_id = Column(
-        Integer,
-        ForeignKey("expert_discussion_area_definition.expert_discussion_area_definition_id"),
-        nullable=True,
-    )
-
-    area_title = Column(String(255), nullable=False)
-
-    candidate_statement = Column(Text)
-    examiner_comment = Column(Text)
-
-    grade = Column(DECIMAL(3, 2))
-    points = Column(DECIMAL(5, 2))
-
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
-
-    exam_part = relationship("ExamPart", back_populates="expert_discussion_items")
-    area_definition = relationship("ExpertDiscussionAreaDefinition")
+    exam_items = relationship("ExamGradingItem", back_populates="criterion")
 
 
 # ==========================
@@ -385,16 +378,11 @@ class ExamGradingSheet(Base):
     sheet_type = Column(String(50), nullable=False, default="member")
     status = Column(String(50), nullable=False, default="draft")
 
-    total_points = Column(DECIMAL(6,2))
+    total_points = Column(DECIMAL(6, 2))
     total_grade = Column(DECIMAL(3, 1))
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     exam_part = relationship("ExamPart", back_populates="grading_sheets")
     sheet_definition = relationship("GradingSheetDefinition")
@@ -430,18 +418,10 @@ class ExamGradingItem(Base):
     comment = Column(Text)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     grading_sheet = relationship("ExamGradingSheet", back_populates="items")
-    criterion = relationship(
-        "GradingCriterionDefinition",
-        back_populates="exam_items",
-    )
+    criterion = relationship("GradingCriterionDefinition", back_populates="exam_items")
 
 
 # ==========================
@@ -451,12 +431,7 @@ class ExamProtocol(Base):
     __tablename__ = "exam_protocol"
 
     exam_protocol_id = Column(Integer, primary_key=True, index=True)
-    exam_id = Column(
-        Integer,
-        ForeignKey("exam.exam_id"),
-        nullable=False,
-        unique=True,
-    )
+    exam_id = Column(Integer, ForeignKey("exam.exam_id"), nullable=False, unique=True)
 
     start_time = Column(DateTime, nullable=True)
     end_time = Column(DateTime, nullable=True)
@@ -466,19 +441,14 @@ class ExamProtocol(Base):
     signed_by_examiner_3 = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     exam = relationship("Exam", back_populates="protocol")
+
 
 # ==========================
 # IHK NOTENSCHLÜSSEL (GRADE KEY)
 # ==========================
-
 class GradeKeyVersion(Base):
     __tablename__ = "grade_key_version"
 
@@ -493,12 +463,7 @@ class GradeKeyVersion(Base):
     is_active = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     entries = relationship(
         "GradeKeyEntry",
@@ -513,24 +478,15 @@ class GradeKeyEntry(Base):
 
     grade_key_entry_id = Column(Integer, primary_key=True, index=True)
 
-    grade_key_version_id = Column(
-        Integer,
-        ForeignKey("grade_key_version.grade_key_version_id"),
-        nullable=False,
-    )
+    grade_key_version_id = Column(Integer, ForeignKey("grade_key_version.grade_key_version_id"), nullable=False)
 
-    # 0..100
     points_100 = Column(Integer, nullable=False)
-
-    # z.B. 1.0, 1.1, 1.2 ... 6.0
     grade_decimal = Column(DECIMAL(3, 1), nullable=False)
 
-    # optional: "A/B/C..." und Text
     grade_letter = Column(String(1), nullable=True)
     grade_text = Column(String(50), nullable=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     version = relationship("GradeKeyVersion", back_populates="entries")
-
-# End of app/domains/exam/models.py
+# End domain/exam/models.py

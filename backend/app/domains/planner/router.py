@@ -6,17 +6,15 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException, status
-from sqlalchemy import select, func
+from sqlalchemy import select, func, exists
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import get_db
 from app.domains.exam.models import Exam
 from app.domains.planner import models, schemas
-from app.domains.planner.models import ExamSlot
 from app.domains.candidate.models import Candidate
 from app.domains.admin.models import TimeScheme, TimeSchemeDefault
-
 from app.domains.exam.services.parts_service import ensure_exam_parts_for_exam
 
 router = APIRouter(prefix="/planner", tags=["Planner"])
@@ -54,8 +52,6 @@ def _resolve_default_time_scheme_id(db: Session, org_unit_id: int, subject_id: i
     return 1
 
 
-from sqlalchemy import exists
-
 def _team_can_delete(db: Session, team_id: int) -> bool:
     """
     can_delete := no exams exist for slots of that team.
@@ -69,7 +65,6 @@ def _team_can_delete(db: Session, team_id: int) -> bool:
     )
     has_exams = bool(db.execute(stmt).scalar())
     return not has_exams
-
 
 
 def _team_slot_count(db: Session, team_id: int) -> int:
@@ -217,7 +212,6 @@ def create_exam_day(
     Neuen Prüfungstag anlegen.
     time_scheme_id kann vom Frontend kommen; wenn nicht gesetzt, wird Default ermittelt.
     """
-    # If payload.time_scheme_id is optional in your schema, resolve it.
     time_scheme_id = payload.time_scheme_id
     if time_scheme_id is None:
         time_scheme_id = _resolve_default_time_scheme_id(db, payload.org_unit_id, payload.subject_id)
@@ -277,7 +271,6 @@ def list_teams_for_exam_day(exam_day_id: int, db: Session = Depends(get_db)):
         member_out = []
         for m in members:
             u = db.get(models.User, m.user_id)
-            # User might be missing if deleted; keep robust
             member_out.append(
                 schemas.ExamDayTeamMemberOut(
                     user_id=m.user_id,
@@ -320,12 +313,6 @@ def create_team_for_exam_day(
     payload: schemas.ExamDayTeamCreate,
     db: Session = Depends(get_db),
 ):
-    """
-    Team (UI: Ausschuss) für einen Prüfungstag anlegen.
-    - name optional -> "Ausschuss N"
-    - exakt 3 user_ids erforderlich
-    - time_scheme_id wird standardmäßig vom exam_day übernommen, kann optional überschrieben werden
-    """
     exam_day = db.get(models.ExamDay, exam_day_id)
     if not exam_day:
         raise HTTPException(status_code=404, detail="Exam day not found")
@@ -333,7 +320,6 @@ def create_team_for_exam_day(
     if not payload.user_ids or len(payload.user_ids) != 3:
         raise HTTPException(status_code=400, detail="Es müssen genau 3 Prüfer (user_ids) zugeordnet werden.")
 
-    # Auto-name
     name = payload.name
     if not name:
         existing_count = (
@@ -352,9 +338,8 @@ def create_team_for_exam_day(
         is_active=True,
     )
     db.add(team)
-    db.flush()  # get team_id
+    db.flush()
 
-    # insert members
     for user_id in payload.user_ids:
         db.add(models.ExamDayTeamUser(exam_day_team_id=team.exam_day_team_id, user_id=user_id))
 
@@ -366,7 +351,6 @@ def create_team_for_exam_day(
 
     db.refresh(team)
 
-    # build response via list endpoint helper
     ts = db.get(TimeScheme, team.time_scheme_id)
     members = (
         db.query(models.ExamDayTeamUser)
@@ -411,9 +395,7 @@ def delete_exam_day_team(team_id: int, db: Session = Depends(get_db)):
             detail="Team kann nicht gelöscht werden, da bereits Prüfungen angelegt sind.",
         )
 
-    # delete slots (safe because no exams)
     db.query(models.ExamSlot).filter(models.ExamSlot.exam_day_team_id == team_id).delete(synchronize_session=False)
-    # delete members + team via cascade (members should cascade if FK is set; but delete explicitly is safe)
     db.query(models.ExamDayTeamUser).filter(models.ExamDayTeamUser.exam_day_team_id == team_id).delete(synchronize_session=False)
 
     db.delete(team)
@@ -426,16 +408,12 @@ def delete_exam_day_team(team_id: int, db: Session = Depends(get_db)):
     response_model=schemas.ExamDayTeamOut,
 )
 def update_exam_day_team(team_id: int, payload: schemas.ExamDayTeamUpdate, db: Session = Depends(get_db)):
-    """
-    Update team name/time_scheme_id. Changing time_scheme_id does NOT auto-regenerate slots.
-    """
     team = _load_team(db, team_id)
 
     if payload.name is not None:
         team.name = payload.name
 
     if payload.time_scheme_id is not None:
-        # Only allow if no exams exist
         if not _team_can_delete(db, team_id):
             raise HTTPException(
                 status_code=400,
@@ -487,12 +465,8 @@ def generate_slots_for_team(
     team_id: int,
     db: Session = Depends(get_db),
 ):
-    """
-    Slots für ein Team anhand des zugeordneten TimeSchemes generieren.
-    """
     team = _load_team(db, team_id)
 
-    # Prevent overwrite if slots already exist
     existing_slots = (
         db.query(models.ExamSlot)
         .filter(models.ExamSlot.exam_day_team_id == team_id)
@@ -513,7 +487,6 @@ def generate_slots_for_team(
     if not exam_day:
         raise HTTPException(status_code=404, detail="Exam day not found")
 
-    # base time
     current_start = datetime.combine(exam_day.date, ts.default_first_slot_start)
 
     created = 0
@@ -532,10 +505,8 @@ def generate_slots_for_team(
         db.add(slot)
         created += 1
 
-        # next slot = end + buffer
         current_start = end + timedelta(minutes=ts.discussion_buffer_minutes)
 
-        # lunch break after N slots
         if ts.lunch_after_slots is not None and ts.lunch_break_duration_minutes is not None:
             if index == ts.lunch_after_slots:
                 current_start = current_start + timedelta(minutes=ts.lunch_break_duration_minutes)
@@ -568,10 +539,6 @@ def list_slots_for_exam_day(
     team_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    """
-    Alle Slots eines Prüfungstags inkl. ggf. zugeordnetem Exam und Kandidat.
-    Optional filter by team_id.
-    """
     stmt = (
         select(
             models.ExamSlot,
@@ -622,13 +589,11 @@ def list_slots_for_exam_day(
 @router.post("/exams", response_model=schemas.ExamOut, status_code=status.HTTP_201_CREATED)
 def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
 
-    # Candidate prüfen
     cand = db.get(Candidate, payload.candidate_id)
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
     try:
-        # Slot row-locken (verhindert double booking)
         slot = db.execute(
             select(models.ExamSlot)
             .where(models.ExamSlot.exam_slot_id == payload.exam_slot_id)
@@ -637,6 +602,17 @@ def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
 
         if not slot:
             raise HTTPException(status_code=404, detail="Slot not found")
+
+        # ✅ exam_day sauber laden (für subject_id)
+        exam_day = db.get(models.ExamDay, slot.exam_day_id)
+        if not exam_day:
+            raise HTTPException(status_code=404, detail="Exam day not found")
+
+        if exam_day.subject_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Exam day has no subject_id; cannot create exam (exam_day_id={exam_day.exam_day_id})",
+            )
 
         if slot.exam_day_team_id is None:
             raise HTTPException(
@@ -647,18 +623,15 @@ def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
                 ),
             )
 
-        # Slot-Status prüfen
         if slot.status not in ("free", "reserved"):
             raise HTTPException(
                 status_code=409,
                 detail=f"Slot ist nicht buchbar (status={slot.status}).",
             )
 
-        # Slot darf noch kein exam_id haben
         if slot.exam_id is not None:
             raise HTTPException(status_code=409, detail="Slot ist bereits mit einer Prüfung verknüpft.")
 
-        # Regel: Kandidat nur einmal pro Team + exam_type
         existing = (
             db.query(Exam.exam_id)
             .join(models.ExamSlot, Exam.exam_slot_id == models.ExamSlot.exam_slot_id)
@@ -675,23 +648,21 @@ def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
                 detail="Kandidat ist für dieses Team und Prüfungstyp bereits eingeplant.",
             )
 
-        # Exam anlegen
         exam = Exam(
             candidate_id=payload.candidate_id,
-            exam_day_id=slot.exam_day_id,            # <-- aus Slot ziehen (robuster)
+            exam_day_id=slot.exam_day_id,  # robuster als payload.exam_day_id
             exam_slot_id=slot.exam_slot_id,
             exam_day_team_id=slot.exam_day_team_id,
             exam_type=payload.exam_type,
             status="planned",
+            subject_id=exam_day.subject_id,  # ✅ jetzt definiert
         )
         db.add(exam)
-        db.flush()  # exam.exam_id verfügbar
+        db.flush()
 
-        # Slot updaten inkl. exam_id
         slot.status = "booked"
         slot.exam_id = exam.exam_id
 
-        # ExamParts sicherstellen (AEVO: Teil 1+2)
         ensure_exam_parts_for_exam(db, exam)
 
         db.commit()
@@ -706,7 +677,6 @@ def create_exam(payload: schemas.ExamCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"create_exam failed: {str(e)}")
 
 
-
 @router.delete(
     "/exams/{exam_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -716,7 +686,6 @@ def delete_exam(exam_id: int, db: Session = Depends(get_db)):
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
 
-    # Slot wieder freigeben
     slot = db.get(models.ExamSlot, exam.exam_slot_id)
     if slot:
         slot.status = "free"
@@ -736,7 +705,6 @@ def update_exam(
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
 
-    # Candidate / Typ anpassen
     exam.candidate_id = payload.candidate_id
     exam.exam_type = payload.exam_type
 
@@ -744,5 +712,4 @@ def update_exam(
     db.commit()
     db.refresh(exam)
     return exam
-
-# End of file
+# End of domain/planner/router.py
