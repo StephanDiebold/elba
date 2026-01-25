@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,8 @@ from app.domains.exam.services.expert_discussion_service import (
     delete_item_answer,
     delete_area,
     submit_expert_discussion_part2,
+    add_area_from_template,
+    list_area_templates_for_exam,
 )
 
 router = APIRouter(prefix="", tags=["Exam: ExpertDiscussion"])
@@ -68,8 +70,14 @@ class ExpertDiscussionBundleOut(BaseModel):
     exam_part_id: int
     exam_id: int
     subject_id: int
+
+    # WICHTIG: Wir liefern künftig standardmäßig nur 1 Area zurück (Fachlichkeit),
+    # bleiben aber beim bestehenden Feld "areas" für Abwärtskompatibilität.
     areas: List[ExamExpertDiscussionAreaOut] = Field(default_factory=list)
 
+class ExamExpertDiscussionAreaCreateIn(BaseModel):
+    # Template area FK: ExpertDiscussionArea.area_id
+    expert_discussion_area_id: int = Field(..., ge=1)
 
 # -------------------------------------------------------------------
 # In Models
@@ -95,21 +103,33 @@ class ExamExpertDiscussionItemUpdateIn(BaseModel):
     examiner_comment: Optional[str] = None
     sort_order: Optional[int] = None
 
+# -------------------------------------------------------------------
+# OUT model for template areas (dropdown)
+# -------------------------------------------------------------------
+
+class ExpertDiscussionAreaTemplateOut(BaseModel):
+    expert_discussion_area_id: int
+    name: str
+    sort_order: int
+    code: str | None = None
+
+
 
 # -------------------------------------------------------------------
 # Routes
 # -------------------------------------------------------------------
 
-@router.get("/exams/{exam_id}/expert-discussion", response_model=ExpertDiscussionBundleOut)
+from typing import Optional
+from fastapi import Query
+
+@router.get("/exams/{exam_id}/expert-discussion")
 def api_get_bundle(
     exam_id: int,
+    area_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
-    try:
-        return get_expert_discussion_bundle(db, exam_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"expert discussion bundle failed: {e}")
+    return get_expert_discussion_bundle(db, exam_id, area_id=area_id)
+
 
 
 @router.patch("/exams/{exam_id}/expert-discussion/areas/{exam_area_id}", response_model=ExamExpertDiscussionAreaOut)
@@ -127,6 +147,9 @@ def api_update_area_score(
             value = payload.grade
         return update_exam_area_score(db, exam_id, exam_area_id, mode=payload.mode, value=value)
     except ValueError as ve:
+        msg = str(ve)
+        if "alredy exists" in msg:
+            raise HTTPException(status_code=409, detail=msg)
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"expert discussion update area failed: {e}")
@@ -236,4 +259,46 @@ def api_submit_part2(
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"expert discussion submit failed: {e}")
-# end of app/domains/exam/expert_discussion_router.py
+    
+@router.post(
+    "/exams/{exam_id}/expert-discussion/areas",
+    response_model=ExamExpertDiscussionAreaOut,
+)
+def api_add_area(
+    exam_id: int,
+    payload: ExamExpertDiscussionAreaCreateIn,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    Fügt eine neue Area (Exam-Instanz) hinzu, basierend auf einer Template-Area.
+    Beispiel: payload.expert_discussion_area_id=2 (Pädagogik)
+    """
+    try:
+        return add_area_from_template(db, exam_id, expert_discussion_area_id=payload.expert_discussion_area_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"expert discussion add area failed: {e}")    
+    
+@router.get(
+    "/exams/{exam_id}/expert-discussion/area-templates",
+    response_model=List[ExpertDiscussionAreaTemplateOut],
+)
+def api_list_area_templates(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    Returns all active template areas for the exam's subject.
+    Used for the 'Neue Area hinzufügen' dropdown.
+    """
+    try:
+        return list_area_templates_for_exam(db, exam_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"expert discussion list templates failed: {e}")
+
+# end of domains/exam/expert_discussion_router.py

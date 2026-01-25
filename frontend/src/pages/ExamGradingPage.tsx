@@ -4,12 +4,14 @@ import { useParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 
 import ExamStartPanel from "@/components/exam/ExamStartPanel";
 import ExpertDiscussionForm from "@/components/exam/ExpertDiscussionForm";
-import { GradePicker, PointsPicker, type GradeMode } from "@/components/exam/GradePicker";
+import ExamPart1Form, {
+  type LocalView,
+  type LocalCriterion,
+} from "@/components/exam/ExamPart1Form";
+import { type GradeMode } from "@/components/exam/GradePicker";
 
 import {
   fetchExamWithParts,
@@ -20,18 +22,10 @@ import {
 
 import type {
   ExamWithParts,
-  MemberGradingSheetView,
-  MemberArea,
-  MemberCriterionItem,
   GradingItemUpdate,
 } from "@/lib/api/exam.api";
 
 type RouteParams = { examId?: string };
-
-// Local type: wir ergänzen _dirty
-type LocalCriterion = MemberCriterionItem & { _dirty?: boolean };
-type LocalArea = Omit<MemberArea, "criteria"> & { criteria: LocalCriterion[] };
-type LocalView = Omit<MemberGradingSheetView, "areas"> & { areas: LocalArea[] };
 
 const LS_MODE_KEY = "elba.grading.mode"; // Toggle pro Prüfer (Browser/User)
 
@@ -51,48 +45,6 @@ function safeWriteMode(mode: GradeMode) {
   } catch {
     // ignore
   }
-}
-
-/**
- * MVP: einfache Schätzung Punkte aus Note.
- * ACHTUNG: Wenn du später eine IHK-spezifische Tabelle/Formel hast,
- * ersetzen wir diese Funktion zentral.
- */
-function estimatePointsFromGrade(grade: number, maxPoints: number): number {
-  // linear: 1 => 100%, 6 => 0%
-  const factor = (6 - grade) / 5; // 1->1.0, 6->0.0
-  const raw = maxPoints * factor;
-  // intern auf 2 Dezimalstellen stabilisieren
-  return Math.round(raw * 100) / 100;
-}
-
-function fmtPoints(value: number): string {
-  return value.toFixed(2).replace(".", ",");
-}
-
-function fmtMaxPoints(value: number): string {
-  return value.toFixed(1).replace(".", ",");
-}
-
-/**
- * Anzeigeformat für Schulnoten:
- * 2.00 => "2"
- * 2.50 => "2,5"
- * 2.25 => "2-"
- * 1.75 => "2+"
- */
-function formatSchoolGrade(grade: number | null): string {
-  if (grade == null || Number.isNaN(grade)) return "—";
-
-  const floor = Math.floor(grade);
-  const frac = Math.round((grade - floor) * 100) / 100; // 0 / 0.25 / 0.5 / 0.75
-
-  if (frac === 0) return String(floor);
-  if (frac === 0.5) return `${floor},5`;
-  if (frac === 0.25) return `${floor}-`;
-  if (frac === 0.75) return `${floor + 1}+`;
-
-  return String(grade).replace(".", ",");
 }
 
 export default function ExamGradingPage() {
@@ -125,6 +77,7 @@ export default function ExamGradingPage() {
   const loadingCacheRef = useRef<Record<number, boolean>>({});
 
   /* ----------------------------- Exam laden ----------------------------- */
+
   useEffect(() => {
     if (!examIdNum || Number.isNaN(examIdNum)) return;
 
@@ -147,12 +100,14 @@ export default function ExamGradingPage() {
     };
 
     loadExam();
+
     return () => {
       cancelled = true;
     };
   }, [examIdNum]);
 
   /* -------- Refs immer aktuell halten (wichtig für Cache-Check) -------- */
+
   useEffect(() => {
     viewCacheRef.current = viewByPartId;
   }, [viewByPartId]);
@@ -161,12 +116,13 @@ export default function ExamGradingPage() {
     loadingCacheRef.current = loadingByPart;
   }, [loadingByPart]);
 
-  /* --------------------- Lazy Loading: View pro Tab -------------------- */
+  /* ------------------- Part-View lazy laden (Teil 1) ------------------- */
+
   useEffect(() => {
-    if (!selectedPartId) return;
-
     const partId = selectedPartId;
+    if (!partId) return;
 
+    // Cache-Check (keine doppelte Fetches)
     const isCached = Object.prototype.hasOwnProperty.call(viewCacheRef.current, partId);
     if (isCached) return;
 
@@ -192,9 +148,9 @@ export default function ExamGradingPage() {
 
         const local: LocalView = {
           ...v,
-          areas: (v.areas || []).map((a: MemberArea) => ({
+          areas: (v.areas || []).map((a) => ({
             ...a,
-            criteria: (a.criteria || []).map((c: MemberCriterionItem) => ({ ...c, _dirty: false })),
+            criteria: (a.criteria || []).map((c) => ({ ...c, _dirty: false })),
           })),
         };
 
@@ -258,34 +214,6 @@ export default function ExamGradingPage() {
     });
   };
 
-  const getAreaOpenCount = (area: LocalArea) => {
-    const missing =
-      area.criteria?.filter((c) => {
-        if (mode === "points") return c.points == null;
-        return c.grade == null;
-      }).length ?? 0;
-
-    const total = area.criteria?.length ?? 0;
-    return { missing, total };
-  };
-
-  const getCriterionAchievedPoints = (c: LocalCriterion) => {
-    if (mode === "points") return typeof c.points === "number" ? c.points : 0;
-    if (typeof c.points === "number") return c.points;
-    if (typeof c.grade === "number") return estimatePointsFromGrade(c.grade, c.max_points);
-    return 0;
-  };
-
-  const getAreaPoints = (area: LocalArea) => {
-    const sumPoints = area.criteria?.reduce((acc, c) => acc + getCriterionAchievedPoints(c), 0) ?? 0;
-    const maxPoints =
-      area.criteria?.reduce(
-        (acc, c) => acc + (typeof c.max_points === "number" ? c.max_points : 0),
-        0
-      ) ?? 0;
-    return { sumPoints, maxPoints };
-  };
-
   const toggleHint = (itemId: number) => {
     setOpenHintsByItemId((prev) => ({ ...prev, [itemId]: !prev[itemId] }));
   };
@@ -321,35 +249,6 @@ export default function ExamGradingPage() {
     });
 
     ensureAreaOpen(partId, areaId);
-  };
-
-  const handleGradeChanged = (
-    partId: number,
-    areaId: number,
-    c: LocalCriterion,
-    next: number | null
-  ) => {
-    if (mode !== "grades") return;
-    const nextPoints = next == null ? null : estimatePointsFromGrade(next, c.max_points);
-
-    updateCriterion(partId, areaId, c.exam_grading_item_id, {
-      grade: next,
-      points: nextPoints,
-    });
-  };
-
-  const handlePointsChanged = (
-    partId: number,
-    areaId: number,
-    c: LocalCriterion,
-    next: number | null
-  ) => {
-    if (mode !== "points") return;
-
-    updateCriterion(partId, areaId, c.exam_grading_item_id, {
-      points: next,
-      grade: null,
-    });
   };
 
   /* ------------------------------- Save -------------------------------- */
@@ -422,397 +321,97 @@ export default function ExamGradingPage() {
           : "Bewertung eingereicht."
       );
 
+      // Status lokal aktualisieren
       setViewByPartId((prev) => {
         const cur = prev[partId];
         if (!cur) return prev;
-        return { ...prev, [partId]: { ...cur, status: "submitted" } };
+        return { ...prev, [partId]: { ...cur, status: "submitted" as any } };
       });
     } catch (err) {
       console.error(err);
-      toast.error("Bewertung konnte nicht eingereicht werden.");
+      toast.error("Einreichen fehlgeschlagen.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  /* -------------------------------- UI -------------------------------- */
+  /* ------------------------------- Render ------------------------------ */
+
+  if (loadingExam) return <div className="p-4">Prüfung wird geladen …</div>;
+  if (!exam) return <div className="p-4">Keine Prüfung gefunden.</div>;
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Prüfungsbewertung</h1>
-          {exam && (
-            <p className="text-sm text-gray-500">
-              Prüfung #{exam.exam_id} · Typ: {String(exam.exam_type).toUpperCase()} · Status:{" "}
-              {exam.status}
-            </p>
-          )}
-        </div>
-      </div>
+    <div className="p-4 space-y-4">
+      <ExamStartPanel exam={exam} examId={examIdNum} />
 
-      {/* Start/Check-in */}
-      <ExamStartPanel
-        exam={exam}
-        examId={examIdNum}
-        onChanged={async () => {
-          const data = await fetchExamWithParts(examIdNum);
-          setExam(data);
-          if (!selectedPartId && data.parts.length > 0) {
-            setSelectedPartId(data.parts[0].exam_part_id);
+      <Tabs
+        value={selectedPartId ? String(selectedPartId) : ""}
+        onValueChange={(v) => setSelectedPartId(Number(v))}
+      >
+        <TabsList>
+          {exam.parts.map((part) => {
+            const label =
+              part.part_number === 1 ? "Teil 1" : part.part_number === 2 ? "Teil 2" : `Teil ${part.part_number}`;
+            return (
+              <TabsTrigger key={part.exam_part_id} value={String(part.exam_part_id)}>
+                {label}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+
+        {exam.parts.map((part) => {
+          const partId = part.exam_part_id;
+
+          // ✅ Teil 2: Fachgespräch
+          if (part.part_number === 2) {
+            return (
+              <TabsContent key={partId} value={String(partId)} className="mt-4">
+                {Number.isFinite(examIdNum) ? (
+                  <ExpertDiscussionForm examId={examIdNum} />
+                ) : (
+                  <div className="text-sm text-gray-500">Ungültige Prüfung.</div>
+                )}
+              </TabsContent>
+            );
           }
-        }}
-      />
 
-      {/* Teile-Auswahl */}
-      <div className="w-full">
-        {loadingExam && <span>Prüfung wird geladen …</span>}
+          // Teil 1 (klassischer Bewertungsbogen)
+          const v = viewByPartId[partId] ?? null;
+          const isLoading = !!loadingByPart[partId];
+          const openSet = openAreasByPartId[partId] ?? new Set<number>();
 
-        {exam?.parts?.length ? (
-          <Tabs
-            value={selectedPartId ? String(selectedPartId) : undefined}
-            onValueChange={(v) => setSelectedPartId(Number(v))}
-            className="w-full"
-          >
-            <TabsList className="w-full justify-start">
-              {exam.parts.map((part) => {
-                const label =
-                  part.part_number === 2
-                    ? "Teil 2 (Fachgespräch)"
-                    : `Teil ${part.part_number}${part.part_mode ? ` (${part.part_mode})` : ""}`;
+          const partHasDirty =
+            v?.areas?.some((a) => a.criteria?.some((c) => c._dirty)) ?? false;
 
-                return (
-                  <TabsTrigger key={part.exam_part_id} value={String(part.exam_part_id)}>
-                    {label}
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
-
-            {exam.parts.map((part) => {
-              const partId = part.exam_part_id;
-
-              // ✅ Teil 2: Fachgespräch
-              if (part.part_number === 2) {
-                return (
-                  <TabsContent key={partId} value={String(partId)} className="mt-4">
-                    {Number.isFinite(examIdNum) ? (
-                      <ExpertDiscussionForm examId={examIdNum} />
-                    ) : (
-                      <div className="text-sm text-gray-500">Ungültige Prüfung.</div>
-                    )}
-                  </TabsContent>
-                );
-              }
-
-              // Teil 1 (klassischer Bewertungsbogen)
-              const v = viewByPartId[partId] ?? null;
-              const isLoading = !!loadingByPart[partId];
-              const openSet = openAreasByPartId[partId] ?? new Set<number>();
-
-              const partHasDirty =
-                v?.areas?.some((a) => a.criteria?.some((c) => c._dirty)) ?? false;
-
-              return (
-                <TabsContent key={partId} value={String(partId)} className="mt-4">
-                  <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-                    <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-                      <div>
-                        <h2 className="font-semibold text-lg">Bewertungsbogen</h2>
-                        {v && (
-                          <p className="text-xs text-gray-500">
-                            Sheet #{v.exam_grading_sheet_id} · Status: {v.status}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        {/* Toggle Noten ↔ Punkte */}
-                        <div className="flex items-center gap-2 mr-2">
-                          <span className="text-xs text-gray-500">Modus:</span>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={mode === "grades" ? "default" : "outline"}
-                            onClick={() => setModePersisted("grades")}
-                            disabled={isLoading}
-                          >
-                            Noten
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={mode === "points" ? "default" : "outline"}
-                            onClick={() => setModePersisted("points")}
-                            disabled={isLoading}
-                          >
-                            Punkte
-                          </Button>
-                        </div>
-
-                        {/* Alle öffnen/schließen */}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => openAllAreas(partId)}
-                          disabled={!v || isLoading}
-                        >
-                          Alle öffnen
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => closeAllAreas(partId)}
-                          disabled={!v || isLoading}
-                        >
-                          Alle schließen
-                        </Button>
-
-                        <div className="w-px h-6 bg-gray-200 mx-1" />
-
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleSave(partId)}
-                          disabled={!v || saving || !partHasDirty}
-                        >
-                          {saving ? "Speichern …" : "Speichern"}
-                        </Button>
-
-                        <Button
-                          size="sm"
-                          variant="default"
-                          className="bg-green-600 hover:bg-green-700"
-                          onClick={() => handleSubmit(partId)}
-                          disabled={!v || submitting}
-                        >
-                          {submitting ? "Einreichen …" : "Einreichen"}
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="p-4">
-                      {isLoading && <div>Bewertungsbogen wird geladen …</div>}
-
-                      {!isLoading && !v && (
-                        <div className="text-sm text-gray-500">
-                          Kein Bewertungsbogen verfügbar.
-                        </div>
-                      )}
-
-                      {!isLoading && v && (
-                        <div className="space-y-4">
-                          {v.areas.map((area) => {
-                            const isOpen = openSet.has(area.grading_area_id);
-                            const { missing, total } = getAreaOpenCount(area);
-                            const { sumPoints, maxPoints } = getAreaPoints(area);
-
-                            return (
-                              <div
-                                key={area.grading_area_id}
-                                className="border border-gray-200 rounded-lg overflow-hidden"
-                              >
-                                {/* Area Header */}
-                                <button
-                                  type="button"
-                                  onClick={() => toggleArea(partId, area.grading_area_id)}
-                                  className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex items-center justify-between"
-                                >
-                                  <div className="text-left">
-                                    <div className="font-semibold">
-                                      {area.area_number}. {area.title}
-                                    </div>
-                                    {area.description && (
-                                      <div className="text-xs text-gray-500">
-                                        {area.description}
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  <div className="flex items-center gap-2">
-                                    <Badge
-                                      variant="secondary"
-                                      className="bg-transparent border border-gray-300 text-gray-700"
-                                    >
-                                      offen {missing}/{total}
-                                    </Badge>
-
-                                    <Badge
-                                      variant="secondary"
-                                      className="bg-transparent border border-gray-300 text-gray-700"
-                                    >
-                                      Σ {fmtPoints(sumPoints)} / {fmtMaxPoints(maxPoints)}
-                                    </Badge>
-                                  </div>
-                                </button>
-
-                                {/* Area Content */}
-                                {isOpen && (
-                                  <div className="p-4 space-y-3">
-                                    {area.criteria.map((c) => {
-                                      const achieved = getCriterionAchievedPoints(c);
-                                      const hintOpen = !!openHintsByItemId[c.exam_grading_item_id];
-                                      const pct =
-                                        c.max_points > 0
-                                          ? Math.round((achieved / c.max_points) * 100)
-                                          : 0;
-
-                                      return (
-                                        <div
-                                          key={c.exam_grading_item_id}
-                                          className="border border-gray-200 rounded-lg p-3"
-                                        >
-                                          {/* Item header */}
-                                          <div className="flex items-start justify-between gap-3">
-                                            <div className="min-w-0">
-                                              <div className="text-sm font-medium truncate">
-                                                {c.criterion_number}. {c.criterion_title}
-                                              </div>
-
-                                              <div className="text-xs text-gray-500">
-                                                Punkte: {fmtPoints(achieved)} /{" "}
-                                                {fmtMaxPoints(c.max_points)}
-                                                {mode === "points" && (
-                                                  <span className="ml-2">({pct}%)</span>
-                                                )}
-                                                {c._dirty ? (
-                                                  <span className="ml-2 text-amber-600">
-                                                    geändert
-                                                  </span>
-                                                ) : null}
-                                              </div>
-
-                                              {mode === "grades" && (
-                                                <div className="text-xs text-gray-500">
-                                                  Note: {formatSchoolGrade(c.grade ?? null)}
-                                                </div>
-                                              )}
-                                            </div>
-
-                                            <div className="flex items-center gap-2 shrink-0">
-                                              <Button
-                                                type="button"
-                                                size="sm"
-                                                variant="outline"
-                                                onClick={() => toggleHint(c.exam_grading_item_id)}
-                                              >
-                                                Hinweise {hintOpen ? "ausblenden" : "anzeigen"}
-                                              </Button>
-                                            </div>
-                                          </div>
-
-                                          <div
-                                            className={[
-                                              "mt-3 grid grid-cols-1 gap-4",
-                                              hintOpen
-                                                ? "md:grid-cols-[1fr_320px]"
-                                                : "md:grid-cols-1",
-                                            ].join(" ")}
-                                          >
-                                            {/* LEFT */}
-                                            <div className="space-y-3">
-                                              {mode === "grades" ? (
-                                                <GradePicker
-                                                  value={c.grade ?? null}
-                                                  onChange={(next) =>
-                                                    handleGradeChanged(
-                                                      partId,
-                                                      area.grading_area_id,
-                                                      c,
-                                                      next
-                                                    )
-                                                  }
-                                                />
-                                              ) : (
-                                                <div>
-                                                  <div className="text-xs text-gray-500 mb-1">
-                                                    Punkte
-                                                  </div>
-                                                  <PointsPicker
-                                                    value={c.points ?? null}
-                                                    maxPoints={c.max_points}
-                                                    onChange={(next) =>
-                                                      handlePointsChanged(
-                                                        partId,
-                                                        area.grading_area_id,
-                                                        c,
-                                                        next
-                                                      )
-                                                    }
-                                                  />
-                                                </div>
-                                              )}
-
-                                              <div>
-                                                <label className="block text-xs text-gray-500 mb-1">
-                                                  Kommentar
-                                                </label>
-                                                <textarea
-                                                  rows={2}
-                                                  value={c.comment ?? ""}
-                                                  onChange={(e) =>
-                                                    updateCriterion(
-                                                      partId,
-                                                      area.grading_area_id,
-                                                      c.exam_grading_item_id,
-                                                      {
-                                                        comment: e.target.value,
-                                                      }
-                                                    )
-                                                  }
-                                                  className="w-full border rounded-md px-2 py-1 text-sm"
-                                                />
-                                              </div>
-                                            </div>
-
-                                            {/* RIGHT */}
-                                            {hintOpen && (
-                                              <div className="border rounded-lg bg-gray-50 p-3">
-                                                <div className="text-sm font-medium mb-2">
-                                                  Hinweise
-                                                </div>
-                                                <div className="text-sm text-gray-700 whitespace-pre-wrap">
-                                                  {c.criterion_description?.trim()
-                                                    ? c.criterion_description
-                                                    : "Keine Hinweise hinterlegt"}
-                                                </div>
-                                              </div>
-                                            )}
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-
-                                    {area.criteria.length === 0 && (
-                                      <div className="text-sm text-gray-500">
-                                        Keine Kriterien in diesem Bereich.
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-
-                          {v.areas.length === 0 && (
-                            <div className="text-sm text-gray-500">
-                              Für diesen Prüfungsteil sind noch keine Bereiche/Kriterien hinterlegt.
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </TabsContent>
-              );
-            })}
-          </Tabs>
-        ) : (
-          <div className="text-sm text-gray-500">Keine Prüfungsteile vorhanden.</div>
-        )}
-      </div>
+          return (
+            <TabsContent key={partId} value={String(partId)} className="mt-4">
+              <ExamPart1Form
+                partId={partId}
+                view={v}
+                isLoading={isLoading}
+                mode={mode}
+                onModeChange={setModePersisted}
+                openAreas={openSet}
+                onToggleArea={(areaId) => toggleArea(partId, areaId)}
+                onOpenAll={() => openAllAreas(partId)}
+                onCloseAll={() => closeAllAreas(partId)}
+                openHintsByItemId={openHintsByItemId}
+                onToggleHint={(itemId) => toggleHint(itemId)}
+                onUpdateCriterion={(areaId, itemId, patch) =>
+                  updateCriterion(partId, areaId, itemId, patch)
+                }
+                onSave={() => handleSave(partId)}
+                onSubmit={() => handleSubmit(partId)}
+                saving={saving}
+                submitting={submitting}
+                partHasDirty={partHasDirty}
+              />
+            </TabsContent>
+          );
+        })}
+      </Tabs>
     </div>
   );
 }
-// Ende src/pages/ExamGradingPage.tsx
+// End of src/pages/ExamGradingPage.tsx

@@ -59,6 +59,15 @@ async function _putJson<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
+async function _patchJson<T>(path: string, body?: unknown): Promise<T> {
+  try {
+    const { data } = await httpClient.patch<T>(path, body ?? {});
+    return data;
+  } catch (err) {
+    throw toApiError("PATCH", path, err);
+  }
+}
+
 async function _delete(path: string): Promise<void> {
   try {
     await httpClient.delete(path);
@@ -399,6 +408,8 @@ export interface ExpertDiscussionBundleOut {
   exam_id: number;
   subject_id: number;
   areas: ExamExpertDiscussionAreaOut[];
+  total_points_100?: number | null;
+  total_grade?: number | null;
 }
 
 export interface ExamExpertDiscussionItemOut {
@@ -426,6 +437,12 @@ export interface ExamExpertDiscussionAreaOut {
   points_100?: number | null;
   grade?: number | null;
 
+    template_items?: Array<{
+    template_item_id: number;
+    item_text: string | null;
+    sort_order: number;
+  }>;
+
   items: ExamExpertDiscussionItemOut[];
 }
 
@@ -440,12 +457,9 @@ export interface ExamExpertDiscussionItemCreateIn {
 export interface ExamExpertDiscussionItemUpdateIn extends ExamExpertDiscussionItemCreateIn {}
 
 /** Bundle laden (serverseitig lazy init) */
-export async function fetchExpertDiscussionBundle(
-  examId: number
-): Promise<ExpertDiscussionBundleOut> {
-  return _getJson<ExpertDiscussionBundleOut>(
-    `${EXAM_BASE}/exams/${examId}/expert-discussion`
-  );
+export async function fetchExpertDiscussionBundle(examId: number, areaId?: number) {
+  const qs = typeof areaId === "number" ? `?area_id=${areaId}` : "";
+  return _getJson<ExpertDiscussionBundleOut>(`/exam/exams/${examId}/expert-discussion${qs}`);
 }
 
 /** Area Score updaten (Server rechnet um) */
@@ -454,7 +468,7 @@ export async function updateExpertDiscussionAreaScore(
   examAreaId: number,
   payload: AreaScoreUpdateIn
 ): Promise<ExamExpertDiscussionAreaOut> {
-  return _putJson<ExamExpertDiscussionAreaOut>(
+  return _patchJson<ExamExpertDiscussionAreaOut>(
     `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}`,
     payload
   );
@@ -478,11 +492,12 @@ export async function updateExpertDiscussionItem(
   itemId: number,
   payload: ExamExpertDiscussionItemUpdateIn
 ): Promise<ExamExpertDiscussionItemOut> {
-  return _putJson<ExamExpertDiscussionItemOut>(
+  return _patchJson<ExamExpertDiscussionItemOut>(
     `${EXAM_BASE}/exams/${examId}/expert-discussion/items/${itemId}`,
     payload
   );
 }
+
 
 /** Item löschen */
 export async function deleteExpertDiscussionItem(
@@ -490,6 +505,39 @@ export async function deleteExpertDiscussionItem(
   itemId: number
 ): Promise<void> {
   return _delete(`${EXAM_BASE}/exams/${examId}/expert-discussion/items/${itemId}`);
+}
+
+/** Area löschen */
+export async function deleteExpertDiscussionArea(
+  examId: number,
+  examAreaId: number
+): Promise<void> {
+  return _delete(`${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}`);
+}
+
+/* ---------- Area Templates (Hinzufügen von vordefinierten Bereichen) ---------- */
+
+export type ExpertDiscussionAreaTemplate = {
+  expert_discussion_area_id: number;
+  name: string;
+  sort_order: number;
+  code: string | null;
+};
+
+export async function fetchExpertDiscussionAreaTemplates(examId: number) {
+  return _getJson<ExpertDiscussionAreaTemplate[]>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/area-templates`
+  );
+}
+
+export async function addExpertDiscussionArea(
+  examId: number,
+  expert_discussion_area_id: number
+): Promise<ExamExpertDiscussionAreaOut> {
+  return _postJson<ExamExpertDiscussionAreaOut>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas`,
+    { expert_discussion_area_id }
+  );
 }
 
 /** Teil 2 einreichen */

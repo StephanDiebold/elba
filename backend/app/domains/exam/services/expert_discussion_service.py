@@ -179,92 +179,88 @@ def _get_subject_id(db: Session, exam: Exam) -> int:
 # Lazy init
 # -------------------------------------------------------------------
 
-def ensure_exam_expert_discussion_initialized(db: Session, exam_id: int) -> ExamPart:
+def ensure_exam_expert_discussion_initialized(
+    db: Session,
+    exam_id: int,
+    *,
+    default_area_id: int = 1,  # 1 = Fachlichkeit
+) -> ExamPart:
     """
-    Ensures:
-    - For part 2: for each active template area, an exam_expert_discussion_area exists
-    - For each exam area: at least one exam_expert_discussion_item exists
+    MVP UX (aktuell gewünschtes Verhalten):
+    - Bei erstem Öffnen wird nur die Default-Area (default_area_id=1) angelegt
+    - Pro Area wird GENAU EINE leere Frage (ExamExpertDiscussionItem) angelegt
+    - Template-Items (ExpertDiscussionItem) werden NICHT als Fragen instanziiert,
+      sondern nur im Bundle als 'template_items' für Dropdown bereitgestellt.
     """
     exam = _get_exam(db, exam_id)
     part2 = _get_part2_for_exam(db, exam_id)
     subject_id = _get_subject_id(db, exam)
 
-    # active template areas
-    tpl_areas: List[ExpertDiscussionArea] = (
+    tpl_area: Optional[ExpertDiscussionArea] = (
         db.query(ExpertDiscussionArea)
         .filter(
             ExpertDiscussionArea.subject_id == subject_id,
+            ExpertDiscussionArea.area_id == int(default_area_id),
             ExpertDiscussionArea.is_active == True,  # noqa: E712
         )
-        .order_by(
-            ExpertDiscussionArea.sort_order.asc(),
-            ExpertDiscussionArea.area_id.asc(),
-        )
-        .all()
+        .first()
     )
-
-    # if no templates -> keep empty (admin needs to fix)
-    if not tpl_areas:
+    if not tpl_area:
+        # Admin-Setup fehlt -> keine Auto-Anlage möglich
         return part2
 
-    existing: List[ExamExpertDiscussionArea] = (
+    exam_area: Optional[ExamExpertDiscussionArea] = (
         db.query(ExamExpertDiscussionArea)
-        .filter(ExamExpertDiscussionArea.exam_part_id == part2.exam_part_id)
-        .all()
-    )
-    existing_by_tpl_area_id = {int(a.expert_discussion_area_id): a for a in existing}
-
-    created_any = False
-    for t in tpl_areas:
-        tpl_area_id = int(t.area_id)
-        if tpl_area_id in existing_by_tpl_area_id:
-            continue
-
-        db.add(
-            ExamExpertDiscussionArea(
-                exam_part_id=part2.exam_part_id,
-                expert_discussion_area_id=tpl_area_id,
-                # DB: expert_discussion_area.name
-                area_title=t.name,
-                points_100=None,
-                grade=None,
-            )
+        .filter(
+            ExamExpertDiscussionArea.exam_part_id == part2.exam_part_id,
+            ExamExpertDiscussionArea.expert_discussion_area_id == int(tpl_area.area_id),
         )
-        created_any = True
+        .options(selectinload(ExamExpertDiscussionArea.items))
+        .first()
+    )
 
-    if created_any:
+    if not exam_area:
+        exam_area = ExamExpertDiscussionArea(
+            exam_part_id=part2.exam_part_id,
+            expert_discussion_area_id=int(tpl_area.area_id),
+            area_title=tpl_area.name,
+            points_100=None,
+            grade=None,
+        )
+        db.add(exam_area)
         try:
             db.commit()
         except IntegrityError:
             db.rollback()
 
-    # ensure at least one item per exam area
-    areas: List[ExamExpertDiscussionArea] = (
-        db.query(ExamExpertDiscussionArea)
-        .filter(ExamExpertDiscussionArea.exam_part_id == part2.exam_part_id)
-        .options(selectinload(ExamExpertDiscussionArea.items))
-        .order_by(ExamExpertDiscussionArea.exam_expert_discussion_area_id.asc())
-        .all()
-    )
-
-    created_item = False
-    for a in areas:
-        if not a.items:
-            db.add(
-                ExamExpertDiscussionItem(
-                    exam_expert_discussion_area_id=a.exam_expert_discussion_area_id,
-                    # DB: exam_expert_discussion_item.template_item_id
-                    template_item_id=None,
-                    question_text="",
-                    answer_text=None,
-                    examiner_comment=None,
-                    sort_order=1,
-                )
+        exam_area = (
+            db.query(ExamExpertDiscussionArea)
+            .filter(
+                ExamExpertDiscussionArea.exam_part_id == part2.exam_part_id,
+                ExamExpertDiscussionArea.expert_discussion_area_id == int(tpl_area.area_id),
             )
-            created_item = True
+            .options(selectinload(ExamExpertDiscussionArea.items))
+            .first()
+        )
 
-    if created_item:
+    if not exam_area:
+        return part2
+
+    # IMPORTANT: pro Area nur 1 Item (leer) anlegen, nicht Template-Items "ausrollen"
+    
+    if not (exam_area.items or []):
+        db.add(
+            ExamExpertDiscussionItem(
+                exam_expert_discussion_area_id=exam_area.exam_expert_discussion_area_id,
+                template_item_id=None,
+                question_text="",
+                answer_text=None,
+                examiner_comment=None,
+                sort_order=1,
+            )
+        )
         db.commit()
+
 
     return part2
 
@@ -273,14 +269,18 @@ def ensure_exam_expert_discussion_initialized(db: Session, exam_id: int) -> Exam
 # Bundle for Router (Option A)
 # -------------------------------------------------------------------
 
-def get_expert_discussion_bundle(db: Session, exam_id: int) -> Dict[str, Any]:
+def get_expert_discussion_bundle(
+    db: Session,
+    exam_id: int,
+    *,
+    area_id: Optional[int] = None,
+) -> Dict[str, Any]:
     exam = _get_exam(db, exam_id)
     part2 = ensure_exam_expert_discussion_initialized(db, exam_id)
     subject_id = _get_subject_id(db, exam)
 
     # ----------------------------
     # Template Areas (Vorlagen)
-    # expert_discussion_area: area_id, subject_id, code, name, description, expected_answer, ...
     # ----------------------------
     tpl_areas: List[ExpertDiscussionArea] = (
         db.query(ExpertDiscussionArea)
@@ -294,14 +294,13 @@ def get_expert_discussion_bundle(db: Session, exam_id: int) -> Dict[str, Any]:
     tpl_by_id: Dict[int, ExpertDiscussionArea] = {int(t.area_id): t for t in tpl_areas}
 
     # ----------------------------
-    # Template Items je Area
-    # expert_discussion_item: item_id, area_id, item_text, sort_order, is_active
+    # Template Items je Area (Dropdown-Hilfe)
     # ----------------------------
-    def _tpl_items(area_id: int) -> List[Dict[str, Any]]:
+    def _tpl_items(area_id_: int) -> List[Dict[str, Any]]:
         rows: List[ExpertDiscussionItem] = (
             db.query(ExpertDiscussionItem)
             .filter(
-                ExpertDiscussionItem.area_id == area_id,
+                ExpertDiscussionItem.area_id == area_id_,
                 ExpertDiscussionItem.is_active == True,  # noqa: E712
             )
             .order_by(ExpertDiscussionItem.sort_order.asc(), ExpertDiscussionItem.item_id.asc())
@@ -318,16 +317,31 @@ def get_expert_discussion_bundle(db: Session, exam_id: int) -> Dict[str, Any]:
 
     # ----------------------------
     # Exam Areas + Items
-    # exam_expert_discussion_area: exam_expert_discussion_area_id, exam_part_id, expert_discussion_area_id, ...
-    # exam_expert_discussion_item: exam_expert_discussion_item_id, exam_expert_discussion_area_id, template_item_id, question_text, ...
     # ----------------------------
-    areas: List[ExamExpertDiscussionArea] = (
+    q = (
         db.query(ExamExpertDiscussionArea)
         .filter(ExamExpertDiscussionArea.exam_part_id == part2.exam_part_id)
         .options(selectinload(ExamExpertDiscussionArea.items))
         .order_by(ExamExpertDiscussionArea.exam_expert_discussion_area_id.asc())
-        .all()
     )
+
+    # Optional filter: nur eine bestimmte Template-Area (z.B. area_id=1)
+    if area_id is not None:
+        q = q.filter(ExamExpertDiscussionArea.expert_discussion_area_id == int(area_id))
+
+    areas: List[ExamExpertDiscussionArea] = q.all()
+
+        # ----------------------------
+    # Totals (Header): AVG(points_100) -> grade_key lookup
+    # ----------------------------
+    valid_points = [float(a.points_100) for a in areas if a.points_100 is not None]
+    if valid_points:
+        total_points_100 = _normalize_points(sum(valid_points) / float(len(valid_points)))
+        total_grade = _p100_to_grade(db, subject_id, total_points_100)
+    else:
+        total_points_100 = None
+        total_grade = None
+
 
     out_areas: List[Dict[str, Any]] = []
     for a in areas:
@@ -345,9 +359,9 @@ def get_expert_discussion_bundle(db: Session, exam_id: int) -> Dict[str, Any]:
                 "code": getattr(tpl, "code", None) if tpl else None,
                 "description": getattr(tpl, "description", None) if tpl else None,
                 "expected_answer": getattr(tpl, "expected_answer", None) if tpl else None,
-                # Template items
-                "template_items": _tpl_items(int(a.expert_discussion_area_id)),
-                # Exam items
+                # Template items (Dropdown)
+                "template_items": _tpl_items(int(a.expert_discussion_area_id)) if tpl else [],
+                # Exam items (echte Protokoll-Fragen)
                 "items": [
                     {
                         "exam_expert_discussion_item_id": int(i.exam_expert_discussion_item_id),
@@ -367,8 +381,129 @@ def get_expert_discussion_bundle(db: Session, exam_id: int) -> Dict[str, Any]:
         "exam_id": int(exam.exam_id),
         "exam_part_id": int(part2.exam_part_id),
         "subject_id": int(subject_id),
+        "total_points_100": total_points_100,
+        "total_grade": float(total_grade) if total_grade is not None else None,
         "areas": out_areas,
     }
+
+
+def add_area_from_template(db: Session, exam_id: int, *, expert_discussion_area_id: int) -> Dict[str, Any]:
+    """
+    Creates a new ExamExpertDiscussionArea for part 2 based on a template area.
+
+    IMPORTANT (UX):
+    - creates exactly ONE empty ExamExpertDiscussionItem (question) as starting point
+    - template items are NOT instantiated as questions; they are exposed via bundle.template_items
+    """
+    exam = _get_exam(db, exam_id)
+    part2 = _get_part2_for_exam(db, exam_id)
+    subject_id = _get_subject_id(db, exam)
+
+    tpl_area: Optional[ExpertDiscussionArea] = (
+        db.query(ExpertDiscussionArea)
+        .filter(
+            ExpertDiscussionArea.subject_id == subject_id,
+            ExpertDiscussionArea.area_id == int(expert_discussion_area_id),
+            ExpertDiscussionArea.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+    if not tpl_area:
+        raise ValueError("Template area not found for this subject (or inactive)")
+
+    exam_area = ExamExpertDiscussionArea(
+        exam_part_id=part2.exam_part_id,
+        expert_discussion_area_id=int(tpl_area.area_id),
+        area_title=tpl_area.name,
+        points_100=None,
+        grade=None,
+    )
+    db.add(exam_area)
+
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise ValueError("Area already exists for this exam/part")
+
+    # IMPORTANT: only one empty item (not from template list)
+    db.add(
+        ExamExpertDiscussionItem(
+            exam_expert_discussion_area_id=exam_area.exam_expert_discussion_area_id,
+            template_item_id=None,
+            question_text="",
+            answer_text=None,
+            examiner_comment=None,
+            sort_order=1,
+        )
+    )
+
+    db.commit()
+    db.refresh(exam_area)
+
+    # Return the new area as router expects
+    bundle = get_expert_discussion_bundle(db, exam_id)
+    for a in bundle["areas"]:
+        if int(a["expert_discussion_area_id"]) == int(expert_discussion_area_id):
+            return a
+
+    return {
+        "exam_expert_discussion_area_id": int(exam_area.exam_expert_discussion_area_id),
+        "exam_part_id": int(exam_area.exam_part_id),
+        "expert_discussion_area_id": int(exam_area.expert_discussion_area_id),
+        "area_title": exam_area.area_title,
+        "points_100": float(exam_area.points_100) if exam_area.points_100 is not None else None,
+        "grade": float(exam_area.grade) if exam_area.grade is not None else None,
+        "code": getattr(tpl_area, "code", None),
+        "description": getattr(tpl_area, "description", None),
+        "expected_answer": getattr(tpl_area, "expected_answer", None),
+        "template_items": [],
+        "items": [],
+    }
+
+
+def list_area_templates_for_exam(db: Session, exam_id: int) -> List[Dict[str, Any]]:
+    """
+    Lists active template areas for the exam's subject that are NOT yet created
+    for this exam's part 2. This makes the UI robust against old DB state.
+    """
+    exam = _get_exam(db, exam_id)
+    part2 = _get_part2_for_exam(db, exam_id)
+    subject_id = _get_subject_id(db, exam)
+
+    existing_ids = {
+        int(x[0])
+        for x in (
+            db.query(ExamExpertDiscussionArea.expert_discussion_area_id)
+            .filter(ExamExpertDiscussionArea.exam_part_id == part2.exam_part_id)
+            .all()
+        )
+    }
+
+    rows: List[ExpertDiscussionArea] = (
+        db.query(ExpertDiscussionArea)
+        .filter(
+            ExpertDiscussionArea.subject_id == subject_id,
+            ExpertDiscussionArea.is_active == True,  # noqa: E712
+        )
+        .order_by(ExpertDiscussionArea.sort_order.asc(), ExpertDiscussionArea.area_id.asc())
+        .all()
+    )
+
+    out = []
+    for a in rows:
+        aid = int(a.area_id)
+        if aid in existing_ids:
+            continue
+        out.append(
+            {
+                "expert_discussion_area_id": aid,
+                "name": a.name,
+                "sort_order": int(a.sort_order),
+                "code": a.code,
+            }
+        )
+    return out
 
 
 # -------------------------------------------------------------------
@@ -425,7 +560,6 @@ def update_exam_area_score(
     db.commit()
     db.refresh(area)
 
-    # return as router expects (area out incl. items + template hints/items)
     bundle = get_expert_discussion_bundle(db, exam_id)
     for a in bundle["areas"]:
         if int(a["exam_expert_discussion_area_id"]) == int(exam_area_id):
@@ -466,19 +600,19 @@ def create_item_answer(
 
     q = (question_text or "").strip()
 
-    # Wenn Template-Item gewählt und kein Text → Template-Text übernehmen
+    # Wenn Template-Item gewählt und kein Text → Template-Text übernehmen (UX)
     if (not q) and template_item_id:
         tpl = (
             db.query(ExpertDiscussionItem)
-            .filter(ExpertDiscussionItem.item_id == template_item_id)  # ✅ FIX
+            .filter(ExpertDiscussionItem.item_id == template_item_id)
             .first()
         )
         if tpl:
-            q = (tpl.item_text or "").strip()  # ✅ FIX
+            q = (tpl.item_text or "").strip()
 
     item = ExamExpertDiscussionItem(
         exam_expert_discussion_area_id=exam_area_id,
-        template_item_id=template_item_id,  # ✅ FIX (FK field in exam table)
+        template_item_id=template_item_id,
         question_text=q,
         answer_text=answer_text,
         examiner_comment=examiner_comment,
@@ -497,7 +631,6 @@ def create_item_answer(
         "examiner_comment": item.examiner_comment,
         "sort_order": int(item.sort_order),
     }
-
 
 
 def update_item_answer(
@@ -523,7 +656,8 @@ def update_item_answer(
 
     if template_item_id is not None:
         item.template_item_id = template_item_id
-        # autofill question if empty
+
+        # Autofill question if empty (nur wenn question_text nicht geliefert/leer)
         if (not (question_text or "").strip()) and template_item_id:
             t = (
                 db.query(ExpertDiscussionItem)
@@ -627,4 +761,4 @@ def submit_expert_discussion_part2(db: Session, exam_id: int) -> ExamPart:
     db.commit()
     db.refresh(part2)
     return part2
-# end of domains/exam/services/expert_discussion_service.py
+# end domain/services/expert_discussion_service.py
