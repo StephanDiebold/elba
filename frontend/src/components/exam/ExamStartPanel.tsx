@@ -232,6 +232,8 @@ export default function ExamStartPanel({ exam, examId, onChanged }: Props) {
               <div className="text-xs text-gray-500 mt-0.5">
                 {isStarted
                   ? "Prüfung läuft – Timer aktiv."
+                  : isPaused
+                  ? "Prüfung pausiert – Timer angehalten."
                   : isDone
                   ? "Prüfung abgeschlossen."
                   : "Check-in durchführen, Modus wählen, dann starten."}

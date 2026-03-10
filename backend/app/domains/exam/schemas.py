@@ -93,6 +93,7 @@ class GradingSheetDefinitionOut(GradingSheetDefinitionBase):
     areas: List[GradingAreaOut] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
+
 class GradeKeyEntryOut(BaseModel):
     grade_key_entry_id: int
     grade_key_version_id: int
@@ -109,6 +110,7 @@ class ActiveGradeKeyOut(BaseModel):
     subject_id: int
     grade_key_version_id: int
 
+
 # =============================================================================
 # Expert Discussion Area Definitions (Fachgespräch-Vorlagen)
 # =============================================================================
@@ -123,7 +125,6 @@ class ExpertDiscussionAreaBase(BaseModel):
 
 
 class ExpertDiscussionAreaCreate(ExpertDiscussionAreaBase):
-    # subject_id kommt aus dem Pfad (subjects/{subject_id})
     pass
 
 
@@ -154,8 +155,7 @@ class ExamProtocolBase(BaseModel):
 
 
 class ExamProtocolUpdate(ExamProtocolBase):
-    # wird in router separat behandelt/gespeichert über ExamPart.part_mode
-    part1_mode: Optional[str] = None  # "presentation" | "demonstration"
+    part1_mode: Optional[str] = None
 
 
 class ExamProtocolOut(ExamProtocolBase):
@@ -175,7 +175,6 @@ class ExamCheckinBase(BaseModel):
     conflict_of_interest_cleared: bool = False
     procedure_info_given: bool = False
     phone_notice_given: bool = False
-
     guest_observer_consent: Optional[bool] = None
     notes: Optional[str] = None
 
@@ -186,7 +185,6 @@ class ExamCheckinUpdate(BaseModel):
     conflict_of_interest_cleared: Optional[bool] = None
     procedure_info_given: Optional[bool] = None
     phone_notice_given: Optional[bool] = None
-
     guest_observer_consent: Optional[bool] = None
     notes: Optional[str] = None
 
@@ -226,6 +224,8 @@ class ExamWithPartsOut(BaseModel):
     subject_id: Optional[int] = None
 
     started_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None          # Zeitstempel der aktuellen Pause
+    total_paused_seconds: int = 0                 # akkumulierte Pausenzeit
     attendance_status: Optional[str] = None
     part1_mode: Optional[Part1Mode] = None
 
@@ -240,16 +240,13 @@ class ExamWithPartsOut(BaseModel):
 class ExpertDiscussionItemBase(BaseModel):
     expert_discussion_area_definition_id: Optional[int] = None
     area_title: str
-
     candidate_statement: Optional[str] = None
     examiner_comment: Optional[str] = None
-
     grade: Optional[float] = None
     points: Optional[float] = None
 
 
 class ExpertDiscussionItemCreate(ExpertDiscussionItemBase):
-    # exam_part_id kommt aus dem Pfad
     pass
 
 
@@ -301,16 +298,13 @@ class MemberGradingSheetOut(BaseModel):
 class MemberCriterionItemOut(BaseModel):
     exam_grading_item_id: int
     grading_criterion_definition_id: int
-
     criterion_number: int
     criterion_title: str
     criterion_description: Optional[str] = None
     max_points: int
-
     grade: Optional[float] = None
     points: Optional[float] = None
     comment: Optional[str] = None
-
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -319,7 +313,6 @@ class MemberAreaOut(BaseModel):
     area_number: int
     title: str
     description: Optional[str] = None
-
     criteria: List[MemberCriterionItemOut] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
@@ -330,7 +323,6 @@ class MemberGradingSheetViewOut(BaseModel):
     examiner_id: int
     sheet_type: str
     status: str
-
     areas: List[MemberAreaOut] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
@@ -348,21 +340,17 @@ class MemberRatingOut(BaseModel):
 
 
 class FinalCriterionOut(BaseModel):
-    criterion_id: int  # == grading_criterion_definition_id
+    criterion_id: int
     criterion_number: int
     title: str
     description: Optional[str] = None
     max_points: int
-
     member_ratings: List[MemberRatingOut] = Field(default_factory=list)
-
     suggested_points: Optional[float] = None
     suggested_grade: Optional[float] = None
-
     decided_points: Optional[float] = None
     decided_grade: Optional[float] = None
     combined_comment: Optional[str] = None
-
     max_grade_diff: Optional[float] = None
     max_points_diff: Optional[float] = None
     has_conflict: bool = False
@@ -394,7 +382,6 @@ class GradingSheetUpdateIn(BaseModel):
 
 
 class FinalCriterionDecisionIn(BaseModel):
-    # criterion_id == grading_criterion_definition_id
     criterion_id: int
     decided_points: Optional[float] = None
     decided_grade: Optional[float] = None
@@ -417,6 +404,8 @@ class ExamStartOut(BaseModel):
     exam_id: int
     status: str
     started_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None          # Zeitstempel der aktuellen Pause
+    total_paused_seconds: int = 0                 # akkumulierte Pausenzeit
     attendance_status: Optional[str] = None
     part1_mode: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)

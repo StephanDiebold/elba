@@ -22,10 +22,8 @@ from app.domains.exam.models import (
 )
 
 from app.domains.exam.schemas import (
-    # GradeKey
     ActiveGradeKeyOut,
     GradeKeyEntryOut,
-    # Sheet definitions
     GradingSheetDefinitionOut,
     GradingSheetDefinitionCreate,
     GradingSheetDefinitionUpdate,
@@ -35,7 +33,6 @@ from app.domains.exam.schemas import (
     GradingCriterionOut,
     GradingCriterionCreate,
     GradingCriterionUpdate,
-    # Exam core
     ExamCheckinOut,
     ExamCheckinUpdate,
     ExamProtocolOut,
@@ -43,7 +40,6 @@ from app.domains.exam.schemas import (
     ExamStartIn,
     ExamStartOut,
     ExamWithPartsOut,
-    # Member sheets / final sheet
     MemberGradingSheetOut,
     MemberGradingSheetViewOut,
     GradingSheetUpdateIn,
@@ -62,13 +58,27 @@ from app.domains.exam.services.grading_service import (
 )
 
 from app.domains.exam.services.parts_service import ensure_exam_parts_for_exam
-
-# ✅ Teil 2 Fachgespräch (V2-only) als Subrouter
 from app.domains.exam.expert_discussion_router import router as expert_discussion_router
 
 
 router = APIRouter(prefix="/exam", tags=["Exam"])
 router.include_router(expert_discussion_router)
+
+
+def _exam_start_out(exam: Exam, db: Session) -> ExamStartOut:
+    """Hilfsfunktion: ExamStartOut aus Exam-Objekt bauen."""
+    part1 = db.execute(
+        select(ExamPart).where(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1)
+    ).scalar_one_or_none()
+    return ExamStartOut(
+        exam_id=exam.exam_id,
+        status=exam.status,
+        started_at=exam.started_at,
+        paused_at=getattr(exam, "paused_at", None),
+        total_paused_seconds=getattr(exam, "total_paused_seconds", 0) or 0,
+        attendance_status=exam.attendance_status,
+        part1_mode=(part1.part_mode if part1 else None),
+    )
 
 
 # ==================================================
@@ -81,9 +91,6 @@ def get_active_grade_key_version(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    Liefert die aktive grade_key_version_id für ein Subject.
-    """
     try:
         version_id = _get_active_grade_key_version_id(db, subject_id)
         return ActiveGradeKeyOut(subject_id=subject_id, grade_key_version_id=version_id)
@@ -97,9 +104,6 @@ def list_grade_key_entries(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """
-    Liefert alle grade_key_entry Zeilen (0..100) für eine Version.
-    """
     rows = (
         db.query(GradeKeyEntry)
         .filter(GradeKeyEntry.grade_key_version_id == grade_key_version_id)
@@ -118,10 +122,7 @@ def list_grading_sheets_for_subject(subject_id: int, db: Session = Depends(get_d
     sheets = (
         db.query(GradingSheetDefinition)
         .filter(GradingSheetDefinition.subject_id == subject_id)
-        .order_by(
-            GradingSheetDefinition.part_number,
-            GradingSheetDefinition.version_no.desc(),
-        )
+        .order_by(GradingSheetDefinition.part_number, GradingSheetDefinition.version_no.desc())
         .all()
     )
     return sheets
@@ -147,54 +148,35 @@ def create_grading_sheet_definition(subject_id: int, data: GradingSheetDefinitio
 
 @router.get("/grading-sheets/{grading_sheet_definition_id}", response_model=GradingSheetDefinitionOut)
 def get_grading_sheet_definition(grading_sheet_definition_id: int, db: Session = Depends(get_db)):
-    sheet = (
-        db.query(GradingSheetDefinition)
-        .filter(GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id)
-        .first()
-    )
+    sheet = db.query(GradingSheetDefinition).filter(
+        GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id
+    ).first()
     if not sheet:
         raise HTTPException(status_code=404, detail="Grading sheet not found")
     return sheet
 
 
 @router.put("/grading-sheets/{grading_sheet_definition_id}", response_model=GradingSheetDefinitionOut)
-def update_grading_sheet_definition(
-    grading_sheet_definition_id: int,
-    data: GradingSheetDefinitionUpdate,
-    db: Session = Depends(get_db),
-):
-    sheet = (
-        db.query(GradingSheetDefinition)
-        .filter(GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id)
-        .first()
-    )
+def update_grading_sheet_definition(grading_sheet_definition_id: int, data: GradingSheetDefinitionUpdate, db: Session = Depends(get_db)):
+    sheet = db.query(GradingSheetDefinition).filter(
+        GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id
+    ).first()
     if not sheet:
         raise HTTPException(status_code=404, detail="Grading sheet not found")
-
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(sheet, field, value)
-
     db.commit()
     db.refresh(sheet)
     return sheet
 
 
-# ---- Areas ----
-
 @router.post("/grading-sheets/{grading_sheet_definition_id}/areas", response_model=GradingAreaOut, status_code=201)
-def create_grading_area(
-    grading_sheet_definition_id: int,
-    data: GradingAreaCreate,
-    db: Session = Depends(get_db),
-):
-    sheet = (
-        db.query(GradingSheetDefinition)
-        .filter(GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id)
-        .first()
-    )
+def create_grading_area(grading_sheet_definition_id: int, data: GradingAreaCreate, db: Session = Depends(get_db)):
+    sheet = db.query(GradingSheetDefinition).filter(
+        GradingSheetDefinition.grading_sheet_definition_id == grading_sheet_definition_id
+    ).first()
     if not sheet:
         raise HTTPException(status_code=404, detail="Grading sheet not found")
-
     area = GradingArea(
         grading_sheet_definition_id=grading_sheet_definition_id,
         area_number=data.area_number,
@@ -213,23 +195,18 @@ def update_grading_area(grading_area_id: int, data: GradingAreaUpdate, db: Sessi
     area = db.query(GradingArea).filter(GradingArea.grading_area_id == grading_area_id).first()
     if not area:
         raise HTTPException(status_code=404, detail="Grading area not found")
-
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(area, field, value)
-
     db.commit()
     db.refresh(area)
     return area
 
-
-# ---- Criteria ----
 
 @router.post("/grading-areas/{grading_area_id}/criteria", response_model=GradingCriterionOut, status_code=201)
 def create_criterion_for_area(grading_area_id: int, data: GradingCriterionCreate, db: Session = Depends(get_db)):
     area = db.query(GradingArea).filter(GradingArea.grading_area_id == grading_area_id).first()
     if not area:
         raise HTTPException(status_code=404, detail="Grading area not found")
-
     criterion = GradingCriterionDefinition(
         grading_sheet_definition_id=area.grading_sheet_definition_id,
         grading_area_id=grading_area_id,
@@ -248,26 +225,19 @@ def create_criterion_for_area(grading_area_id: int, data: GradingCriterionCreate
 
 @router.put("/grading-criteria/{grading_criterion_definition_id}", response_model=GradingCriterionOut)
 def update_criterion(grading_criterion_definition_id: int, data: GradingCriterionUpdate, db: Session = Depends(get_db)):
-    criterion = (
-        db.query(GradingCriterionDefinition)
-        .filter(GradingCriterionDefinition.grading_criterion_definition_id == grading_criterion_definition_id)
-        .first()
-    )
+    criterion = db.query(GradingCriterionDefinition).filter(
+        GradingCriterionDefinition.grading_criterion_definition_id == grading_criterion_definition_id
+    ).first()
     if not criterion:
         raise HTTPException(status_code=404, detail="Criterion not found")
-
     payload = data.model_dump(exclude_unset=True)
-
-    # optional: grading_area_id wechseln
     if "grading_area_id" in payload and payload["grading_area_id"] is not None:
         target_area = db.query(GradingArea).filter(GradingArea.grading_area_id == payload["grading_area_id"]).first()
         if not target_area:
             raise HTTPException(status_code=404, detail="Target area not found")
         criterion.grading_sheet_definition_id = target_area.grading_sheet_definition_id
-
     for field, value in payload.items():
         setattr(criterion, field, value)
-
     db.commit()
     db.refresh(criterion)
     return criterion
@@ -291,7 +261,6 @@ def get_exam_with_parts(exam_id: int, db: Session = Depends(get_db)):
         .order_by(ExamPart.part_number)
         .all()
     )
-
     part1 = next((p for p in parts if p.part_number == 1), None)
 
     return ExamWithPartsOut(
@@ -300,6 +269,8 @@ def get_exam_with_parts(exam_id: int, db: Session = Depends(get_db)):
         status=exam.status,
         subject_id=exam.subject_id,
         started_at=getattr(exam, "started_at", None),
+        paused_at=getattr(exam, "paused_at", None),
+        total_paused_seconds=getattr(exam, "total_paused_seconds", 0) or 0,
         attendance_status=getattr(exam, "attendance_status", None),
         part1_mode=(part1.part_mode if part1 else None),
         parts=parts,
@@ -320,16 +291,24 @@ def start_exam(
     if exam.status in ("done", "canceled"):
         raise HTTPException(status_code=409, detail=f"Exam cannot be started (status={exam.status}).")
 
-    if exam.started_at is None:
-        exam.started_at = datetime.utcnow()
+    now = datetime.utcnow()
 
-    if exam.status == "planned":
+    # Erste Start: started_at setzen
+    if exam.started_at is None:
+        exam.started_at = now
+
+    # Fortsetzen nach Pause: akkumuliere Pausenzeit
+    if exam.status == "paused" and getattr(exam, "paused_at", None) is not None:
+        pause_duration = int((now - exam.paused_at).total_seconds())
+        exam.total_paused_seconds = (getattr(exam, "total_paused_seconds", 0) or 0) + pause_duration
+        exam.paused_at = None
+
+    if exam.status in ("planned", "paused"):
         exam.status = "in_progress"
 
     if exam.attendance_status is None:
         exam.attendance_status = "present"
 
-    # checkin row ensure
     checkin = db.get(ExamCheckin, exam_id)
     if checkin is None:
         db.add(ExamCheckin(exam_id=exam_id))
@@ -349,13 +328,53 @@ def start_exam(
     if part1:
         db.refresh(part1)
 
-    return ExamStartOut(
-        exam_id=exam.exam_id,
-        status=exam.status,
-        started_at=exam.started_at,
-        attendance_status=exam.attendance_status,
-        part1_mode=(part1.part_mode if part1 else None),
-    )
+    return _exam_start_out(exam, db)
+
+
+@router.post("/exams/{exam_id}/stop", response_model=ExamStartOut)
+def stop_exam(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Stoppt eine laufende Prüfung → paused. Setzt paused_at auf jetzt."""
+    exam = db.execute(select(Exam).where(Exam.exam_id == exam_id).with_for_update()).scalar_one_or_none()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    if exam.status not in ("in_progress", "paused"):
+        raise HTTPException(status_code=409, detail=f"Exam cannot be stopped (status={exam.status}).")
+
+    exam.status = "paused"
+    exam.paused_at = datetime.utcnow()
+    db.commit()
+    db.refresh(exam)
+
+    return _exam_start_out(exam, db)
+
+
+@router.post("/exams/{exam_id}/reset", response_model=ExamStartOut)
+def reset_exam(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Setzt Prüfung vollständig zurück: status → planned, alle Zeitfelder → None/0."""
+    exam = db.execute(select(Exam).where(Exam.exam_id == exam_id).with_for_update()).scalar_one_or_none()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    if exam.status in ("done", "canceled"):
+        raise HTTPException(status_code=409, detail=f"Exam cannot be reset (status={exam.status}).")
+
+    exam.status = "planned"
+    exam.started_at = None
+    exam.paused_at = None
+    exam.total_paused_seconds = 0
+    db.commit()
+    db.refresh(exam)
+
+    return _exam_start_out(exam, db)
 
 
 # ==================================================
@@ -363,15 +382,10 @@ def start_exam(
 # ==================================================
 
 @router.get("/exams/{exam_id}/checkin", response_model=ExamCheckinOut)
-def get_exam_checkin(
-    exam_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
+def get_exam_checkin(exam_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-
     checkin = db.query(ExamCheckin).filter(ExamCheckin.exam_id == exam_id).first()
     if not checkin:
         checkin = ExamCheckin(exam_id=exam_id)
@@ -382,24 +396,16 @@ def get_exam_checkin(
 
 
 @router.put("/exams/{exam_id}/checkin", response_model=ExamCheckinOut)
-def update_exam_checkin(
-    exam_id: int,
-    data: ExamCheckinUpdate,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
+def update_exam_checkin(exam_id: int, data: ExamCheckinUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-
     checkin = db.query(ExamCheckin).filter(ExamCheckin.exam_id == exam_id).first()
     if not checkin:
         checkin = ExamCheckin(exam_id=exam_id)
         db.add(checkin)
-
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(checkin, field, value)
-
     db.commit()
     db.refresh(checkin)
     return checkin
@@ -414,19 +420,13 @@ def get_exam_protocol(exam_id: int, db: Session = Depends(get_db)):
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-
     protocol = db.query(ExamProtocol).filter(ExamProtocol.exam_id == exam.exam_id).first()
     if not protocol:
         protocol = ExamProtocol(exam_id=exam.exam_id)
         db.add(protocol)
         db.commit()
         db.refresh(protocol)
-
-    part1 = (
-        db.query(ExamPart)
-        .filter(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1)
-        .first()
-    )
+    part1 = db.query(ExamPart).filter(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1).first()
     out = ExamProtocolOut.model_validate(protocol)
     out.part1_mode = part1.part_mode if part1 else None
     return out
@@ -437,33 +437,23 @@ def update_exam_protocol(exam_id: int, data: ExamProtocolUpdate, db: Session = D
     exam = db.query(Exam).filter(Exam.exam_id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-
     protocol = db.query(ExamProtocol).filter(ExamProtocol.exam_id == exam.exam_id).first()
     if not protocol:
         protocol = ExamProtocol(exam_id=exam.exam_id)
         db.add(protocol)
-
     payload = data.model_dump(exclude_unset=True)
     part1_mode = payload.pop("part1_mode", None)
-
     for field, value in payload.items():
         setattr(protocol, field, value)
-
     db.commit()
     db.refresh(protocol)
-
     if part1_mode:
         ensure_exam_parts_for_exam(db, exam)
-        part1 = (
-            db.query(ExamPart)
-            .filter(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1)
-            .first()
-        )
+        part1 = db.query(ExamPart).filter(ExamPart.exam_id == exam.exam_id, ExamPart.part_number == 1).first()
         if part1:
             part1.part_mode = part1_mode
             db.commit()
             db.refresh(part1)
-
     out = ExamProtocolOut.model_validate(protocol)
     out.part1_mode = part1_mode
     return out
@@ -474,73 +464,43 @@ def update_exam_protocol(exam_id: int, data: ExamProtocolUpdate, db: Session = D
 # ==================================================
 
 @router.get("/exam-parts/{exam_part_id}/my-grading-sheet", response_model=MemberGradingSheetOut)
-def get_my_grading_sheet(
-    exam_part_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
+def get_my_grading_sheet(exam_part_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     sheet = get_or_create_member_sheet(db=db, exam_part_id=exam_part_id, examiner_id=current_user.user_id)
-
     sheet = db.execute(
         select(ExamGradingSheet)
         .where(ExamGradingSheet.exam_grading_sheet_id == sheet.exam_grading_sheet_id)
         .options(selectinload(ExamGradingSheet.items))
     ).scalar_one()
-
     return sheet
 
 
 @router.get("/exam-parts/{exam_part_id}/my-grading-sheet/view", response_model=MemberGradingSheetViewOut)
-def get_my_grading_sheet_view_endpoint(
-    exam_part_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
+def get_my_grading_sheet_view_endpoint(exam_part_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     return get_member_sheet_view(db=db, exam_part_id=exam_part_id, examiner_id=current_user.user_id)
 
 
 @router.put("/grading-sheets/{sheet_id}/items")
-def update_sheet_items_endpoint(
-    sheet_id: int,
-    payload: GradingSheetUpdateIn,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
+def update_sheet_items_endpoint(sheet_id: int, payload: GradingSheetUpdateIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _ = update_member_sheet(db=db, sheet_id=sheet_id, examiner_id=current_user.user_id, payload=payload)
     return {"status": "ok"}
 
 
 @router.post("/grading-sheets/{sheet_id}/submit")
-def submit_my_sheet_endpoint(
-    sheet_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
+def submit_my_sheet_endpoint(sheet_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     sheet, all_submitted = submit_member_sheet(db, sheet_id=sheet_id, examiner_id=current_user.user_id)
     return {"status": "ok", "all_submitted_for_part": all_submitted}
 
 
 # ==================================================
-# Final Grading Sheet (Ausschuss) - Konsolidierung Teil 1
+# Final Grading Sheet
 # ==================================================
 
 @router.get("/exam-parts/{exam_part_id}/final-grading-sheet", response_model=FinalSheetOut)
-def get_final_sheet_view_endpoint(
-    exam_part_id: int,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    data = build_final_sheet_view(db, exam_part_id=exam_part_id)
-    return data
+def get_final_sheet_view_endpoint(exam_part_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    return build_final_sheet_view(db, exam_part_id=exam_part_id)
 
 
 @router.put("/exam-parts/{exam_part_id}/final-grading-sheet", response_model=FinalSheetOut)
-def update_final_sheet_endpoint(
-    exam_part_id: int,
-    payload: FinalSheetDecisionIn,
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
+def update_final_sheet_endpoint(exam_part_id: int, payload: FinalSheetDecisionIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _ = save_final_sheet_decisions(db=db, exam_part_id=exam_part_id, decisions=payload)
-    data = build_final_sheet_view(db, exam_part_id=exam_part_id)
-    return data
+    return build_final_sheet_view(db, exam_part_id=exam_part_id)

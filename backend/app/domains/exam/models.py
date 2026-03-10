@@ -42,7 +42,7 @@ class Exam(Base):
     )
 
     status = Column(
-        SAEnum("planned", "in_progress", "done", "canceled", "no_show", name="exam_status_enum"),
+        SAEnum("planned", "in_progress", "paused", "done", "canceled", "no_show", name="exam_status_enum"),
         nullable=False,
         default="planned",
     )

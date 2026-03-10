@@ -98,6 +98,8 @@ export interface ExamStartOut {
   exam_id: number;
   status: string;
   started_at: string | null;
+  paused_at: string | null;
+  total_paused_seconds: number;
   attendance_status: string | null;
   part1_mode: Part1Mode | null;
 }
@@ -168,6 +170,8 @@ export interface ExamWithParts {
   subject_id?: number | null;
 
   started_at?: string | null;
+  paused_at?: string | null;
+  total_paused_seconds?: number;
   attendance_status?: string | null;
   part1_mode?: Part1Mode | null;
 
@@ -466,7 +470,7 @@ export interface ExamExpertDiscussionItemUpdateIn extends ExamExpertDiscussionIt
 export interface ExpertDiscussionAreaTemplate {
   template_item_id: number;
   expert_discussion_area_id: number;
-  question_text: string;
+  item_text: string;
   expected_answer?: string | null;
   sort_order?: number | null;
 }
@@ -486,28 +490,27 @@ export async function fetchExpertDiscussionBundle(
 
 /**
  * Template-Items für eine Area laden (Dropdown-Vorschläge).
- * Backend: GET /exam/exams/{exam_id}/expert-discussion/areas/{area_id}/templates
+ * Backend: GET /exam/expert-discussion/areas/{area_id}/templates
  */
 export async function fetchExpertDiscussionAreaTemplates(
-  examId: number,
   examAreaId: number
 ): Promise<ExpertDiscussionAreaTemplate[]> {
   return _getJson<ExpertDiscussionAreaTemplate[]>(
-    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}/templates`
+    `${EXAM_BASE}/expert-discussion/areas/${examAreaId}/templates`
   );
 }
 
 /**
  * Eine neue Area zum Fachgespräch hinzufügen.
- * Backend: POST /exam/exams/{exam_id}/expert-discussion/areas
+ * Backend: POST /exam/exams/{exam_id}/expert-discussion/areas/{area_id}
  */
 export async function addExpertDiscussionArea(
   examId: number,
-  payload: ExpertDiscussionAreaCreateIn
+  expertDiscussionAreaId: number
 ): Promise<ExamExpertDiscussionAreaOut> {
   return _postJson<ExamExpertDiscussionAreaOut>(
-    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas`,
-    payload
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${expertDiscussionAreaId}`,
+    {}
   );
 }
 

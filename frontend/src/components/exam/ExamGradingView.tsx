@@ -154,6 +154,50 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
   const viewCacheRef = useRef<Record<number, LocalView | null>>({});
   const loadingCacheRef = useRef<Record<number, boolean>>({});
 
+  // ── Timer ────────────────────────────────────────────────────────────────
+  const DURATION_SECONDS = 15 * 60;
+
+  function toUtcMs(iso: string): number {
+    if (/[Zz]$/.test(iso) || /[+-]\d{2}:\d{2}$/.test(iso)) return new Date(iso).getTime();
+    return new Date(iso + "Z").getTime();
+  }
+
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [timerRemaining, setTimerRemaining] = useState<number>(DURATION_SECONDS);
+
+  useEffect(() => {
+    // Interval immer zuerst stoppen
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+
+    console.log("[Timer] status:", exam?.status, "started_at:", exam?.started_at, "paused_at:", exam?.paused_at, "total_paused_seconds:", exam?.total_paused_seconds);
+
+    if (!exam?.started_at) return;
+
+    if (exam.status === "paused" && exam.paused_at) {
+      // Fixer Wert aus DB: wie lange lief die Prüfung bis zur Pause?
+      const netElapsed = Math.floor(
+        (toUtcMs(exam.paused_at) - toUtcMs(exam.started_at) - (exam.total_paused_seconds ?? 0) * 1000) / 1000
+      );
+      setTimerRemaining(Math.max(DURATION_SECONDS - netElapsed, 0));
+      return; // kein Interval starten
+    }
+
+    if (exam.status === "in_progress") {
+      const startMs = toUtcMs(exam.started_at);
+      const pausedMs = (exam.total_paused_seconds ?? 0) * 1000;
+      const tick = () => {
+        const elapsed = Math.floor((Date.now() - startMs - pausedMs) / 1000);
+        const r = Math.max(DURATION_SECONDS - elapsed, 0);
+        setTimerRemaining(r);
+        if (r <= 0 && countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+      };
+      tick();
+      countdownRef.current = setInterval(tick, 500);
+      return () => { if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; } };
+    }
+  // Deps: nur primitive Werte – kein exam-Objekt selbst
+  }, [exam?.status, exam?.started_at, exam?.paused_at, exam?.total_paused_seconds]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Reset bei examId-Wechsel
   useEffect(() => {
     setExam(null);
@@ -467,9 +511,14 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
         onChanged={handleAfterStart}
       />
 
-      {/* ── Timer: läuft wenn Prüfung in_progress ── */}
-      {exam.started_at && (exam.status === "in_progress" || exam.status === "done") && (
-        <ExamTimer startedAt={exam.started_at} durationMin={15} warnMin={2} />
+      {/* ── Timer ── */}
+      {exam.started_at && (exam.status === "in_progress" || exam.status === "paused" || exam.status === "done") && (
+        <ExamTimer
+          remaining={timerRemaining}
+          totalSeconds={DURATION_SECONDS}
+          paused={exam.status === "paused"}
+          warnSeconds={120}
+        />
       )}
 
       {/* Prüfungsteile */}
