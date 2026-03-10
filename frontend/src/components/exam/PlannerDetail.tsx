@@ -1,4 +1,10 @@
 // src/components/exam/PlannerDetail.tsx
+//
+// Änderung ggü. Original:
+//   onNavigateToExam navigiert jetzt zur neuen Master-Detail Bewertungsshell:
+//   /pruefungstage/:examDayId/bewertung?exam=:examId
+//   (statt /exams/:examId)
+//
 
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -54,7 +60,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
   const [teamForm, setTeamForm] = useState<{
     name: string;
     time_scheme_id: string;
-    user_ids: string; // CSV
+    user_ids: string;
   }>({
     name: "",
     time_scheme_id: "",
@@ -81,9 +87,9 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
 
   const formatTime = (t: string) => t?.slice(0, 5) || t;
 
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   // Load
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -120,9 +126,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     }
 
     load();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [examDayId]);
 
   const reloadTeamsAndSlots = async () => {
@@ -134,9 +138,9 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     setSlots(s);
   };
 
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   // Team create
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   const handleCreateTeam = async () => {
     setTeamError(null);
 
@@ -155,15 +159,11 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
 
     try {
       setSavingTeam(true);
-
       await createExamDayTeam(examDayId, {
         name: teamForm.name || undefined,
-        time_scheme_id: teamForm.time_scheme_id
-          ? Number(teamForm.time_scheme_id)
-          : undefined,
+        time_scheme_id: teamForm.time_scheme_id ? Number(teamForm.time_scheme_id) : undefined,
         user_ids: userIds,
       });
-
       await reloadTeamsAndSlots();
       setTeamDialogOpen(false);
       setTeamForm({ name: "", time_scheme_id: "", user_ids: "" });
@@ -176,9 +176,9 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     }
   };
 
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   // Slots (Team)
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   const handleGenerateSlots = async (team: ExamDayTeam) => {
     try {
       setSlotsBusyTeamId(team.exam_day_team_id);
@@ -211,9 +211,9 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     }
   };
 
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   // Candidate assign
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   const openAssignDialog = (slot: ExamSlot) => {
     setAssignSlot(slot);
     setAssignForm({ candidate_id: "", exam_type: "aevo" });
@@ -248,9 +248,23 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     }
   };
 
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
+  // Navigate to grading
+  // ─────────────────────────────────────────────
+  // ✅ Navigiert zur neuen Master-Detail Bewertungsshell.
+  //    ?exam=:examId wählt den Kandidaten direkt vor.
+  const handleNavigateToExam = (examId: number) => {
+    navigate(`/pruefungstage/${examDayId}/bewertung?exam=${examId}`);
+  };
+
+  // Shortcut: "Alle Bewertungen starten" ohne vorauswahl
+  const handleStartGradingDay = () => {
+    navigate(`/pruefungstage/${examDayId}/bewertung`);
+  };
+
+  // ─────────────────────────────────────────────
   // Render
-  // ------------------------------------------------------
+  // ─────────────────────────────────────────────
   if (loading) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-6 text-sm text-muted-foreground">
@@ -275,10 +289,13 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     }
   })();
 
+  // Prüfungen vorhanden?
+  const hasAnyExams = slots.some((s) => s.exam_id != null);
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 space-y-6">
       {/* Kopfbereich */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <p className="text-xs text-muted-foreground uppercase tracking-wide">
             Planung
@@ -288,21 +305,27 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Ort:{" "}
-            {examDay.location || (
-              <span className="text-muted-foreground/80">–</span>
-            )}
-            {examDay.default_room && (
-              <>
-                {" · "}
-                Raum: {examDay.default_room}
-              </>
-            )}
+            {examDay.location || <span className="text-muted-foreground/80">–</span>}
+            {examDay.default_room && <> · Raum: {examDay.default_room}</>}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             OrgUnit-ID: {examDay.org_unit_id} · Subject-ID: {examDay.subject_id} ·
             Zeitschema-ID: {examDay.time_scheme_id}
           </p>
         </div>
+
+        {/* ✅ Bewertungen starten Button (nur wenn Prüfungen vorhanden) */}
+        {hasAnyExams && (
+          <Button
+            onClick={handleStartGradingDay}
+            className="bg-blue-600 hover:bg-blue-700 text-white gap-2"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+            Bewertungen starten
+          </Button>
+        )}
       </div>
 
       {/* Tabs pro Ausschuss */}
@@ -315,7 +338,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
         onDeleteSlots={handleDeleteSlots}
         onDeleteTeam={handleDeleteTeam}
         onOpenAssign={openAssignDialog}
-        onNavigateToExam={(examId: number) => navigate(`/exams/${examId}`)}
+        onNavigateToExam={handleNavigateToExam}
         slotsBusyTeamId={slotsBusyTeamId}
       />
 
@@ -331,9 +354,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
               <Label>Name (optional)</Label>
               <Input
                 value={teamForm.name}
-                onChange={(e) =>
-                  setTeamForm((p) => ({ ...p, name: e.target.value }))
-                }
+                onChange={(e) => setTeamForm((p) => ({ ...p, name: e.target.value }))}
                 placeholder="z. B. Ausschuss 1"
               />
             </div>
@@ -343,12 +364,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
               <Input
                 type="number"
                 value={teamForm.time_scheme_id}
-                onChange={(e) =>
-                  setTeamForm((p) => ({
-                    ...p,
-                    time_scheme_id: e.target.value,
-                  }))
-                }
+                onChange={(e) => setTeamForm((p) => ({ ...p, time_scheme_id: e.target.value }))}
                 placeholder="leer = Standard"
               />
             </div>
@@ -358,9 +374,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
               <Input
                 placeholder="z. B. 12,34,56"
                 value={teamForm.user_ids}
-                onChange={(e) =>
-                  setTeamForm((p) => ({ ...p, user_ids: e.target.value }))
-                }
+                onChange={(e) => setTeamForm((p) => ({ ...p, user_ids: e.target.value }))}
               />
             </div>
 
@@ -368,12 +382,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
           </div>
 
           <DialogFooter>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setTeamDialogOpen(false)}
-              disabled={savingTeam}
-            >
+            <Button variant="outline" size="sm" onClick={() => setTeamDialogOpen(false)} disabled={savingTeam}>
               Abbrechen
             </Button>
             <Button size="sm" onClick={handleCreateTeam} disabled={savingTeam}>
@@ -403,12 +412,7 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
                   id="candidate_id"
                   type="number"
                   value={assignForm.candidate_id}
-                  onChange={(e) =>
-                    setAssignForm((prev) => ({
-                      ...prev,
-                      candidate_id: e.target.value,
-                    }))
-                  }
+                  onChange={(e) => setAssignForm((prev) => ({ ...prev, candidate_id: e.target.value }))}
                   placeholder="z. B. 123"
                 />
               </div>
@@ -459,3 +463,4 @@ export default function PlannerDetail({ examDayId }: PlannerDetailProps) {
     </div>
   );
 }
+// End of src/components/exam/PlannerDetail.tsx

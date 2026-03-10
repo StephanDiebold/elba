@@ -59,15 +59,6 @@ async function _putJson<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
-async function _patchJson<T>(path: string, body?: unknown): Promise<T> {
-  try {
-    const { data } = await httpClient.patch<T>(path, body ?? {});
-    return data;
-  } catch (err) {
-    throw toApiError("PATCH", path, err);
-  }
-}
-
 async function _delete(path: string): Promise<void> {
   try {
     await httpClient.delete(path);
@@ -117,8 +108,8 @@ export interface ExamProtocol {
   exam_protocol_id: number;
   exam_id: number;
 
-  start_time?: string | null; // ISO
-  end_time?: string | null; // ISO
+  start_time?: string | null;
+  end_time?: string | null;
 
   signed_by_chair?: boolean;
   signed_by_examiner_2?: boolean;
@@ -310,7 +301,7 @@ export interface FinalSheetDecisionIn {
 }
 
 /* ==================================================
- *   CORE API-Funktionen (ExamStartPanel/ExamGradingPage)
+ *   CORE API-Funktionen
  * ================================================== */
 
 /** Exam inkl. Parts */
@@ -323,6 +314,23 @@ export async function startExam(examId: number, part1_mode?: Part1Mode): Promise
   return _postJson<ExamStartOut>(`${EXAM_BASE}/exams/${examId}/start`, {
     part1_mode: part1_mode ?? null,
   });
+}
+
+/**
+ * Prüfung stoppen (status: in_progress → paused).
+ * Backend: POST /exam/exams/{exam_id}/stop
+ */
+export async function stopExam(examId: number): Promise<ExamStartOut> {
+  return _postJson<ExamStartOut>(`${EXAM_BASE}/exams/${examId}/stop`, {});
+}
+
+/**
+ * Prüfung zurücksetzen: started_at löschen, status → "planned".
+ * Timer startet beim nächsten Start neu.
+ * Backend: POST /exam/exams/{exam_id}/reset
+ */
+export async function resetExam(examId: number): Promise<ExamStartOut> {
+  return _postJson<ExamStartOut>(`${EXAM_BASE}/exams/${examId}/reset`, {});
 }
 
 /** Check-in holen */
@@ -364,7 +372,10 @@ export async function fetchMyGradingSheetView(examPartId: number): Promise<Membe
 }
 
 /** Items auf einem Sheet speichern */
-export async function updateGradingSheetItemsApi(sheetId: number, payload: GradingSheetUpdate): Promise<void> {
+export async function updateGradingSheetItemsApi(
+  sheetId: number,
+  payload: GradingSheetUpdate
+): Promise<void> {
   await _putJson<{ status: string }>(`${EXAM_BASE}/grading-sheets/${sheetId}/items`, payload);
 }
 
@@ -392,9 +403,7 @@ export async function updateFinalGradingSheet(
 }
 
 /* ==================================================
- *   Expert Discussion (Teil 2 Fachgespräch) – Option A ONLY
- *   examId-basiert, Server macht Lazy-Init + Umrechnung
- *   Backend: /exam/exams/{exam_id}/expert-discussion/...
+ *   Expert Discussion (Teil 2 Fachgespräch)
  * ================================================== */
 
 export type AreaScoreUpdateIn = {
@@ -408,6 +417,7 @@ export interface ExpertDiscussionBundleOut {
   exam_id: number;
   subject_id: number;
   areas: ExamExpertDiscussionAreaOut[];
+  // Aggregierte Gesamtwerte (optional, vom Backend berechnet)
   total_points_100?: number | null;
   total_grade?: number | null;
 }
@@ -437,13 +447,9 @@ export interface ExamExpertDiscussionAreaOut {
   points_100?: number | null;
   grade?: number | null;
 
-    template_items?: Array<{
-    template_item_id: number;
-    item_text: string | null;
-    sort_order: number;
-  }>;
-
   items: ExamExpertDiscussionItemOut[];
+  // Template-Items für Dropdown-Vorschläge (optional)
+  template_items?: ExpertDiscussionAreaTemplate[] | null;
 }
 
 export interface ExamExpertDiscussionItemCreateIn {
@@ -456,25 +462,79 @@ export interface ExamExpertDiscussionItemCreateIn {
 
 export interface ExamExpertDiscussionItemUpdateIn extends ExamExpertDiscussionItemCreateIn {}
 
-/** Bundle laden (serverseitig lazy init) */
-export async function fetchExpertDiscussionBundle(examId: number, areaId?: number) {
-  const qs = typeof areaId === "number" ? `?area_id=${areaId}` : "";
-  return _getJson<ExpertDiscussionBundleOut>(`/exam/exams/${examId}/expert-discussion${qs}`);
+/** Template-Item für Dropdown-Vorschläge im Fachgespräch */
+export interface ExpertDiscussionAreaTemplate {
+  template_item_id: number;
+  expert_discussion_area_id: number;
+  question_text: string;
+  expected_answer?: string | null;
+  sort_order?: number | null;
 }
 
-/** Area Score updaten (Server rechnet um) */
+export interface ExpertDiscussionAreaCreateIn {
+  expert_discussion_area_id?: number | null;
+  area_title?: string | null;
+}
+
+export async function fetchExpertDiscussionBundle(
+  examId: number
+): Promise<ExpertDiscussionBundleOut> {
+  return _getJson<ExpertDiscussionBundleOut>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion`
+  );
+}
+
+/**
+ * Template-Items für eine Area laden (Dropdown-Vorschläge).
+ * Backend: GET /exam/exams/{exam_id}/expert-discussion/areas/{area_id}/templates
+ */
+export async function fetchExpertDiscussionAreaTemplates(
+  examId: number,
+  examAreaId: number
+): Promise<ExpertDiscussionAreaTemplate[]> {
+  return _getJson<ExpertDiscussionAreaTemplate[]>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}/templates`
+  );
+}
+
+/**
+ * Eine neue Area zum Fachgespräch hinzufügen.
+ * Backend: POST /exam/exams/{exam_id}/expert-discussion/areas
+ */
+export async function addExpertDiscussionArea(
+  examId: number,
+  payload: ExpertDiscussionAreaCreateIn
+): Promise<ExamExpertDiscussionAreaOut> {
+  return _postJson<ExamExpertDiscussionAreaOut>(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas`,
+    payload
+  );
+}
+
+/**
+ * Eine Area aus dem Fachgespräch entfernen.
+ * Backend: DELETE /exam/exams/{exam_id}/expert-discussion/areas/{area_id}
+ */
+export async function deleteExpertDiscussionArea(
+  examId: number,
+  examAreaId: number
+): Promise<void> {
+  return _delete(
+    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}`
+  );
+}
+
 export async function updateExpertDiscussionAreaScore(
   examId: number,
   examAreaId: number,
   payload: AreaScoreUpdateIn
 ): Promise<ExamExpertDiscussionAreaOut> {
-  return _patchJson<ExamExpertDiscussionAreaOut>(
+  return _putJson<ExamExpertDiscussionAreaOut>(
     `${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}`,
     payload
   );
 }
 
-/** Item anlegen */
 export async function createExpertDiscussionItem(
   examId: number,
   examAreaId: number,
@@ -486,20 +546,17 @@ export async function createExpertDiscussionItem(
   );
 }
 
-/** Item updaten */
 export async function updateExpertDiscussionItem(
   examId: number,
   itemId: number,
   payload: ExamExpertDiscussionItemUpdateIn
 ): Promise<ExamExpertDiscussionItemOut> {
-  return _patchJson<ExamExpertDiscussionItemOut>(
+  return _putJson<ExamExpertDiscussionItemOut>(
     `${EXAM_BASE}/exams/${examId}/expert-discussion/items/${itemId}`,
     payload
   );
 }
 
-
-/** Item löschen */
 export async function deleteExpertDiscussionItem(
   examId: number,
   itemId: number
@@ -507,47 +564,12 @@ export async function deleteExpertDiscussionItem(
   return _delete(`${EXAM_BASE}/exams/${examId}/expert-discussion/items/${itemId}`);
 }
 
-/** Area löschen */
-export async function deleteExpertDiscussionArea(
-  examId: number,
-  examAreaId: number
-): Promise<void> {
-  return _delete(`${EXAM_BASE}/exams/${examId}/expert-discussion/areas/${examAreaId}`);
-}
-
-/* ---------- Area Templates (Hinzufügen von vordefinierten Bereichen) ---------- */
-
-export type ExpertDiscussionAreaTemplate = {
-  expert_discussion_area_id: number;
-  name: string;
-  sort_order: number;
-  code: string | null;
-};
-
-export async function fetchExpertDiscussionAreaTemplates(examId: number) {
-  return _getJson<ExpertDiscussionAreaTemplate[]>(
-    `${EXAM_BASE}/exams/${examId}/expert-discussion/area-templates`
-  );
-}
-
-export async function addExpertDiscussionArea(
-  examId: number,
-  expert_discussion_area_id: number
-): Promise<ExamExpertDiscussionAreaOut> {
-  return _postJson<ExamExpertDiscussionAreaOut>(
-    `${EXAM_BASE}/exams/${examId}/expert-discussion/areas`,
-    { expert_discussion_area_id }
-  );
-}
-
-/** Teil 2 einreichen */
 export async function submitExpertDiscussion(examId: number): Promise<{ ok: boolean }> {
   return _postJson<{ ok: boolean }>(
     `${EXAM_BASE}/exams/${examId}/expert-discussion/submit`,
     {}
   );
 }
-
 
 /* ==================================================
  *   Grade Key (IHK)
@@ -567,17 +589,14 @@ export interface GradeKeyEntryOut {
   grade_text?: string | null;
 }
 
-/** Active Grade Key Version je Subject */
 export async function fetchActiveGradeKey(subjectId: number): Promise<ActiveGradeKeyOut> {
   return _getJson<ActiveGradeKeyOut>(`${EXAM_BASE}/subjects/${subjectId}/grade-key/active`);
 }
 
-/** Grade Key Entries je Version */
 export async function fetchGradeKeyEntries(gradeKeyVersionId: number): Promise<GradeKeyEntryOut[]> {
   return _getJson<GradeKeyEntryOut[]>(`${EXAM_BASE}/grade-keys/${gradeKeyVersionId}/entries`);
 }
 
-/** Convenience: Active Grade Key + Entries in einem Call (FE-seitig gebündelt) */
 export interface ActiveGradeKeyWithEntriesOut {
   subject_id: number;
   grade_key_version_id: number;

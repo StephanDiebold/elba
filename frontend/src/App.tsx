@@ -21,6 +21,7 @@ import RolesAdminPage from "@/pages/admin/RolesAdminPage";
 
 import PlannerPage from "@/pages/PlannerPage";
 import ExamDayDetailPage from "@/pages/ExamDayDetailPage";
+import ExamDayGradingPage from "@/pages/ExamDayGradingPage";
 
 import CandidatesPage from "@/pages/CandidatesPage";
 import ExamGradingPage from "@/pages/ExamGradingPage";
@@ -44,23 +45,30 @@ export default function App() {
 
               {/* Protected Bereich */}
               <Route element={<ProtectedRoute />}>
+
+                {/* ─────────────────────────────────────────────────
+                    Vollbild-Routen – KEIN AppShell (eigenes Layout)
+                    ───────────────────────────────────────────────── */}
+                <Route
+                  path="/pruefungstage/:examDayId/bewertung"
+                  element={<ExamDayGradingPage />}
+                />
+
+                {/* ─────────────────────────────────────────────────
+                    Standard-Routen – mit AppShell (Header + Padding)
+                    ───────────────────────────────────────────────── */}
                 <Route element={<AppShell />}>
                   {/* Dashboard */}
                   <Route path="/dashboard" element={<DashboardPage />} />
 
                   {/* Root → Dashboard */}
-                  <Route
-                    path="/"
-                    element={<Navigate to="/dashboard" replace />}
-                  />
+                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
                   {/* Prüfungstage / Planer */}
                   <Route path="/pruefungstage" element={<PlannerPage />} />
-                  <Route
-                    path="/pruefungstage/:examDayId"
-                    element={<ExamDayDetailPage />}
-                  />
-                  {/* Legacy-Alias, falls noch genutzt */}
+                  <Route path="/pruefungstage/:examDayId" element={<ExamDayDetailPage />} />
+
+                  {/* Legacy-Alias */}
                   <Route path="/planner" element={<PlannerPage />} />
 
                   {/* Kandidaten */}
@@ -68,28 +76,19 @@ export default function App() {
 
                   {/* Admin */}
                   <Route path="/admin/org-units" element={<OrgUnitsPage />} />
-                  <Route
-                    path="/admin/committees"
-                    element={<CommitteesAdminPage />}
-                  />
-                  <Route
-                    path="/admin/committees/:committeeId/members"
-                    element={<CommitteeMembersPage />}
-                  />
-                  <Route path="/admin/users" element={<UsersAdminPage />}
-                  />
-                  <Route path="/admin/roles" element={<RolesAdminPage />}
-                  />
-
+                  <Route path="/admin/committees" element={<CommitteesAdminPage />} />
+                  <Route path="/admin/committees/:committeeId/members" element={<CommitteeMembersPage />} />
+                  <Route path="/admin/users" element={<UsersAdminPage />} />
+                  <Route path="/admin/roles" element={<RolesAdminPage />} />
                   <Route path="/admin/time-schemes" element={<TimeSchemesPage />} />
 
                   {/* Account */}
                   <Route path="/account" element={<AccountPage />} />
 
-                  {/* Prüfungsbewertung */}
+                  {/* Einzelne Prüfungsbewertung (Legacy / Direktlink) */}
                   <Route path="/exams/:examId" element={<ExamGradingPage />} />
 
-                  {/* 404 innerhalb des geschützten Bereichs */}
+                  {/* 404 */}
                   <Route
                     path="*"
                     element={
