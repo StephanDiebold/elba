@@ -20,9 +20,6 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 
 
-# ==========================
-# EXAM (zentral)
-# ==========================
 class Exam(Base):
     __tablename__ = "exam"
 
@@ -48,8 +45,8 @@ class Exam(Base):
     )
 
     started_at = Column(DateTime, nullable=True)
-    paused_at = Column(DateTime, nullable=True)
-    total_paused_seconds = Column(Integer, nullable=False, default=0)
+    paused_at = Column(DateTime, nullable=True)                          # NEU: Zeitstempel der aktuellen Pause
+    total_paused_seconds = Column(Integer, nullable=False, default=0)   # NEU: akkumulierte Pausensekunden
     ended_at = Column(DateTime, nullable=True)
 
     attendance_status = Column(
@@ -86,9 +83,6 @@ class Exam(Base):
     )
 
 
-# ==========================
-# CHECK-IN (separat, MVP)
-# ==========================
 class ExamCheckin(Base):
     __tablename__ = "exam_checkin"
 
@@ -109,9 +103,6 @@ class ExamCheckin(Base):
     exam = relationship("Exam", back_populates="checkin", uselist=False)
 
 
-# ==========================
-# EXAM PARTS
-# ==========================
 class ExamPart(Base):
     __tablename__ = "exam_part"
 
@@ -129,7 +120,11 @@ class ExamPart(Base):
     grade = Column(DECIMAL(3, 1))
     protocol_text = Column(Text)
 
-    # Teil 2 Ergebnisfelder (Fachgespräch)
+    # Timer pro Prüfungsteil
+    started_at = Column(DateTime, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    total_paused_seconds = Column(Integer, nullable=False, default=0)
+
     expert_discussion_points_100 = Column(DECIMAL(6, 2), nullable=True)
     expert_discussion_grade = Column(DECIMAL(3, 1), nullable=True)
 
@@ -144,7 +139,6 @@ class ExamPart(Base):
         cascade="all, delete-orphan",
     )
 
-    # Teil 2 (V2-final): Areas hängen direkt am Part
     expert_discussion_areas = relationship(
         "ExamExpertDiscussionArea",
         back_populates="exam_part",
@@ -153,9 +147,6 @@ class ExamPart(Base):
     )
 
 
-# ==========================
-# EXPERT DISCUSSION (Teil 2) - Templates
-# ==========================
 class ExpertDiscussionArea(Base):
     __tablename__ = "expert_discussion_area"
 
@@ -197,9 +188,6 @@ class ExpertDiscussionItem(Base):
     area = relationship("ExpertDiscussionArea", back_populates="items")
 
 
-# ==========================
-# EXPERT DISCUSSION (Teil 2) - Exam Instances
-# ==========================
 class ExamExpertDiscussionArea(Base):
     __tablename__ = "exam_expert_discussion_area"
     __table_args__ = (
@@ -264,9 +252,6 @@ class ExamExpertDiscussionItem(Base):
     template_item = relationship("ExpertDiscussionItem")
 
 
-# ==========================
-# TEMPLATE: GRADING SHEETS
-# ==========================
 class GradingSheetDefinition(Base):
     __tablename__ = "grading_sheet_definition"
 
@@ -291,15 +276,9 @@ class GradingSheetDefinition(Base):
         order_by="GradingArea.area_number",
     )
 
-    criteria = relationship(
-        "GradingCriterionDefinition",
-        back_populates="sheet_definition",
-    )
+    criteria = relationship("GradingCriterionDefinition", back_populates="sheet_definition")
 
 
-# ==========================
-# GRADING AREAS
-# ==========================
 class GradingArea(Base):
     __tablename__ = "grading_area"
 
@@ -329,9 +308,6 @@ class GradingArea(Base):
     )
 
 
-# ==========================
-# GRADING CRITERIA
-# ==========================
 class GradingCriterionDefinition(Base):
     __tablename__ = "grading_criterion_definition"
 
@@ -362,9 +338,6 @@ class GradingCriterionDefinition(Base):
     exam_items = relationship("ExamGradingItem", back_populates="criterion")
 
 
-# ==========================
-# PRÜFER-BEWERTUNGSBOGEN
-# ==========================
 class ExamGradingSheet(Base):
     __tablename__ = "exam_grading_sheet"
 
@@ -397,9 +370,6 @@ class ExamGradingSheet(Base):
     )
 
 
-# ==========================
-# GRADING ITEMS
-# ==========================
 class ExamGradingItem(Base):
     __tablename__ = "exam_grading_item"
 
@@ -426,9 +396,6 @@ class ExamGradingItem(Base):
     criterion = relationship("GradingCriterionDefinition", back_populates="exam_items")
 
 
-# ==========================
-# PROTOKOLL
-# ==========================
 class ExamProtocol(Base):
     __tablename__ = "exam_protocol"
 
@@ -448,20 +415,14 @@ class ExamProtocol(Base):
     exam = relationship("Exam", back_populates="protocol")
 
 
-# ==========================
-# IHK NOTENSCHLÜSSEL (GRADE KEY)
-# ==========================
 class GradeKeyVersion(Base):
     __tablename__ = "grade_key_version"
 
     grade_key_version_id = Column(Integer, primary_key=True, index=True)
-
     subject_id = Column(Integer, ForeignKey("subject.subject_id"), nullable=False)
-
     version_no = Column(Integer, nullable=False, default=1)
     valid_from = Column(Date, nullable=False)
     valid_to = Column(Date, nullable=True)
-
     is_active = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -479,16 +440,12 @@ class GradeKeyEntry(Base):
     __tablename__ = "grade_key_entry"
 
     grade_key_entry_id = Column(Integer, primary_key=True, index=True)
-
     grade_key_version_id = Column(Integer, ForeignKey("grade_key_version.grade_key_version_id"), nullable=False)
-
     points_100 = Column(Integer, nullable=False)
     grade_decimal = Column(DECIMAL(3, 1), nullable=False)
-
     grade_letter = Column(String(1), nullable=True)
     grade_text = Column(String(50), nullable=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     version = relationship("GradeKeyVersion", back_populates="entries")
-# End domain/exam/models.py

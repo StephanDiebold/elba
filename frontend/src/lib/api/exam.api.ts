@@ -88,6 +88,18 @@ export interface ExamPart {
   status: string;
   points?: number | null;
   grade?: number | null;
+  // Timer-Felder
+  started_at?: string | null;
+  ended_at?: string | null;
+  total_paused_seconds?: number;
+}
+
+export interface ExamPartTimerOut {
+  exam_part_id: number;
+  status: string;
+  started_at: string | null;
+  ended_at: string | null;
+  total_paused_seconds: number;
 }
 
 /* ---------- Start / Lifecycle ---------- */
@@ -616,5 +628,20 @@ export async function fetchActiveGradeKeyWithEntries(
     grade_key_version_id: active.grade_key_version_id,
     entries,
   };
+}
+// end of src/lib/api/exam.api.ts
+
+/* ---------- ExamPart Timer ---------- */
+
+export async function startExamPart(partId: number): Promise<ExamPartTimerOut> {
+  return _postJson<ExamPartTimerOut>(`${EXAM_BASE}/exam-parts/${partId}/start`, {});
+}
+
+export async function stopExamPart(partId: number): Promise<ExamPartTimerOut> {
+  return _postJson<ExamPartTimerOut>(`${EXAM_BASE}/exam-parts/${partId}/stop`, {});
+}
+
+export async function resetExamPart(partId: number): Promise<ExamPartTimerOut> {
+  return _postJson<ExamPartTimerOut>(`${EXAM_BASE}/exam-parts/${partId}/reset`, {});
 }
 // end of src/lib/api/exam.api.ts

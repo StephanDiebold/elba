@@ -1,8 +1,9 @@
 # app/domains/exam/router.py
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -504,3 +505,95 @@ def get_final_sheet_view_endpoint(exam_part_id: int, db: Session = Depends(get_d
 def update_final_sheet_endpoint(exam_part_id: int, payload: FinalSheetDecisionIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _ = save_final_sheet_decisions(db=db, exam_part_id=exam_part_id, decisions=payload)
     return build_final_sheet_view(db, exam_part_id=exam_part_id)
+
+
+# ==================================================
+# ExamPart Timer: Start / Stop / Reset
+# ==================================================
+
+class ExamPartTimerOut(BaseModel):
+    exam_part_id: int
+    status: str
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    total_paused_seconds: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+@router.post("/exam-parts/{exam_part_id}/start", response_model=ExamPartTimerOut)
+def start_exam_part(
+    exam_part_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Startet einen Prüfungsteil. Teil 1 muss abgeschlossen sein bevor Teil 2 starten kann."""
+    part = db.get(ExamPart, exam_part_id)
+    if not part:
+        raise HTTPException(status_code=404, detail="ExamPart not found")
+
+    # Teil 2: erst starten wenn Teil 1 done
+    if part.part_number == 2:
+        part1 = db.query(ExamPart).filter(
+            ExamPart.exam_id == part.exam_id,
+            ExamPart.part_number == 1,
+        ).first()
+        if part1 and part1.status != "done":
+            raise HTTPException(
+                status_code=409,
+                detail="Teil 1 muss zuerst abgeschlossen werden (status=done).",
+            )
+
+    if part.status not in ("planned", "in_progress"):
+        raise HTTPException(status_code=409, detail=f"Part cannot be started (status={part.status}).")
+
+    now = datetime.utcnow()
+    if part.status == "planned":
+        part.started_at = now
+        part.ended_at = None
+        part.total_paused_seconds = 0
+
+    part.status = "in_progress"
+    db.commit()
+    db.refresh(part)
+    return part
+
+
+@router.post("/exam-parts/{exam_part_id}/stop", response_model=ExamPartTimerOut)
+def stop_exam_part(
+    exam_part_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Stoppt einen Prüfungsteil → status=done, ended_at=jetzt."""
+    part = db.get(ExamPart, exam_part_id)
+    if not part:
+        raise HTTPException(status_code=404, detail="ExamPart not found")
+
+    if part.status not in ("in_progress",):
+        raise HTTPException(status_code=409, detail=f"Part cannot be stopped (status={part.status}).")
+
+    part.status = "done"
+    part.ended_at = datetime.utcnow()
+    db.commit()
+    db.refresh(part)
+    return part
+
+
+@router.post("/exam-parts/{exam_part_id}/reset", response_model=ExamPartTimerOut)
+def reset_exam_part(
+    exam_part_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Setzt einen Prüfungsteil zurück → status=planned, Timer gelöscht."""
+    part = db.get(ExamPart, exam_part_id)
+    if not part:
+        raise HTTPException(status_code=404, detail="ExamPart not found")
+
+    part.status = "planned"
+    part.started_at = None
+    part.ended_at = None
+    part.total_paused_seconds = 0
+    db.commit()
+    db.refresh(part)
+    return part

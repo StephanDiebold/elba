@@ -14,8 +14,8 @@ import { Badge } from "@/components/ui/badge";
 
 import ExamStartPanel from "@/components/exam/ExamStartPanel";
 import ExpertDiscussionForm from "@/components/exam/ExpertDiscussionForm";
-import ExamTimer from "@/components/exam/ExamTimer";
-import { GradePicker, PointsPicker, type GradeMode } from "@/components/exam/GradePicker";
+import ExamPartTimerBar from "@/components/exam/ExamPartTimerBar";
+import { PointsPicker, type GradeMode } from "@/components/exam/GradePicker";
 
 import {
   fetchExamWithParts,
@@ -151,53 +151,18 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  const [activeTab, setActiveTab] = useState<"protokoll" | "teil1" | "fachgespraech" | "konsolidierung">("protokoll");
+
   const viewCacheRef = useRef<Record<number, LocalView | null>>({});
   const loadingCacheRef = useRef<Record<number, boolean>>({});
 
+
   // ── Timer ────────────────────────────────────────────────────────────────
-  const DURATION_SECONDS = 15 * 60;
+  // Wird jetzt von ExamPartTimerBar pro ExamPart gesteuert.
 
-  function toUtcMs(iso: string): number {
-    if (/[Zz]$/.test(iso) || /[+-]\d{2}:\d{2}$/.test(iso)) return new Date(iso).getTime();
-    return new Date(iso + "Z").getTime();
-  }
-
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [timerRemaining, setTimerRemaining] = useState<number>(DURATION_SECONDS);
-
+  // Reset bei examId-Wechsel
   useEffect(() => {
-    // Interval immer zuerst stoppen
-    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
-
-    console.log("[Timer] status:", exam?.status, "started_at:", exam?.started_at, "paused_at:", exam?.paused_at, "total_paused_seconds:", exam?.total_paused_seconds);
-
-    if (!exam?.started_at) return;
-
-    if (exam.status === "paused" && exam.paused_at) {
-      // Fixer Wert aus DB: wie lange lief die Prüfung bis zur Pause?
-      const netElapsed = Math.floor(
-        (toUtcMs(exam.paused_at) - toUtcMs(exam.started_at) - (exam.total_paused_seconds ?? 0) * 1000) / 1000
-      );
-      setTimerRemaining(Math.max(DURATION_SECONDS - netElapsed, 0));
-      return; // kein Interval starten
-    }
-
-    if (exam.status === "in_progress") {
-      const startMs = toUtcMs(exam.started_at);
-      const pausedMs = (exam.total_paused_seconds ?? 0) * 1000;
-      const tick = () => {
-        const elapsed = Math.floor((Date.now() - startMs - pausedMs) / 1000);
-        const r = Math.max(DURATION_SECONDS - elapsed, 0);
-        setTimerRemaining(r);
-        if (r <= 0 && countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
-      };
-      tick();
-      countdownRef.current = setInterval(tick, 500);
-      return () => { if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; } };
-    }
-  // Deps: nur primitive Werte – kein exam-Objekt selbst
-  }, [exam?.status, exam?.started_at, exam?.paused_at, exam?.total_paused_seconds]); // eslint-disable-line react-hooks/exhaustive-deps
-
+    setExam(null);
   // Reset bei examId-Wechsel
   useEffect(() => {
     setExam(null);
@@ -502,281 +467,247 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
     );
   }
 
-  return (
-    <div className="space-y-4">
-      {/* Check-in Panel */}
-      <ExamStartPanel
-        exam={exam}
-        examId={examId}
-        onChanged={handleAfterStart}
-      />
+  const isStarted = !!exam.started_at;
+  const tab1Label = exam.part1_mode === "demonstration" ? "Durchführung" : "Präsentation";
 
-      {/* ── Timer ── */}
-      {exam.started_at && (exam.status === "in_progress" || exam.status === "paused" || exam.status === "done") && (
-        <ExamTimer
-          remaining={timerRemaining}
-          totalSeconds={DURATION_SECONDS}
-          paused={exam.status === "paused"}
-          warnSeconds={120}
+  return (
+    <div className="space-y-3">
+
+      {/* ── Vor dem Start: Start-Panel prominent ── */}
+      {!isStarted && (
+        <ExamStartPanel
+          exam={exam}
+          examId={examId}
+          onChanged={handleAfterStart}
         />
       )}
 
-      {/* Prüfungsteile */}
-      {exam.parts?.length ? (
-        <Tabs
-          value={selectedPartId ? String(selectedPartId) : undefined}
-          onValueChange={(v) => setSelectedPartId(Number(v))}
-          className="w-full"
-        >
-          <TabsList className="w-full justify-start">
-            {exam.parts.map((part) => (
-              <TabsTrigger key={part.exam_part_id} value={String(part.exam_part_id)}>
-                {partTabLabel(part, exam.part1_mode)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+      {/* ── Nach dem Start: Timer + Tabs ── */}
+      {isStarted && (
+        <>
+          {/* Timer + Stop-Button Zeile */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <ExamTimer
+                remaining={timerRemaining}
+                totalSeconds={DURATION_SECONDS}
+                paused={exam.status === "paused"}
+                warnSeconds={120}
+              />
+            </div>
+          </div>
 
-          {exam.parts.map((part) => {
-            const partId = part.exam_part_id;
+          {/* Haupt-Tabs */}
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
+            <TabsList className="w-full justify-start border-b border-gray-200 bg-transparent rounded-none h-auto p-0 gap-0">
+              {(["protokoll", "teil1", "fachgespraech", "konsolidierung"] as const).map((tab) => {
+                const labels: Record<string, string> = {
+                  protokoll: "✅ Check-In",
+                  teil1: `📊 ${tab1Label}`,
+                  fachgespraech: "💬 Fachgespräch",
+                  konsolidierung: "📋 Protokoll",
+                };
+                return (
+                  <TabsTrigger
+                    key={tab}
+                    value={tab}
+                    className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:bg-transparent data-[state=active]:text-blue-700 px-4 py-2.5 text-sm font-medium text-gray-500 hover:text-gray-700 transition-colors"
+                  >
+                    {labels[tab]}
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
 
-            /* ── Teil 2: Fachgespräch ── */
-            if (part.part_number === 2) {
-              return (
-                <TabsContent key={partId} value={String(partId)} className="mt-4">
-                  <ExpertDiscussionForm examId={examId} />
-                </TabsContent>
-              );
-            }
+            {/* ── Tab: Protokoll ── */}
+            <TabsContent value="protokoll" className="mt-4">
+              <ExamStartPanel
+                exam={exam}
+                examId={examId}
+                onChanged={handleAfterStart}
+              />
+            </TabsContent>
 
-            /* ── Teil 1: Modus noch nicht gesetzt ── */
-            const effectiveMode = part.part_mode ?? exam.part1_mode ?? null;
-            if (!effectiveMode) {
-              return (
-                <TabsContent key={partId} value={String(partId)} className="mt-4">
-                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center space-y-3">
-                    <div className="text-4xl">📋</div>
-                    <div className="font-semibold text-gray-700">Prüfung noch nicht gestartet</div>
-                    <div className="text-sm text-gray-500 max-w-xs mx-auto leading-relaxed">
-                      Im Bereich <span className="font-medium text-gray-700">„Start &amp; Check-in"</span> den
-                      Prüfungsmodus wählen (Präsentation oder Durchführung) und die Prüfung starten.
+            {/* ── Tab: Präsentation / Durchführung ── */}
+            <TabsContent value="teil1" className="mt-4">
+              {/* Inhalte aus dem bisherigen Teil-1-Block */}
+              {exam.parts.filter(p => p.part_number === 1).map((part) => {
+                const partId = part.exam_part_id;
+                const effectiveMode = part.part_mode ?? exam.part1_mode ?? null;
+                if (!effectiveMode) {
+                  return (
+                    <div key={partId} className="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center space-y-3">
+                      <div className="text-4xl">📋</div>
+                      <div className="font-semibold text-gray-700">Prüfungsmodus nicht gesetzt</div>
+                      <div className="text-sm text-gray-500">Bitte im Protokoll-Tab den Modus wählen.</div>
                     </div>
-                  </div>
-                </TabsContent>
-              );
-            }
-
-            /* ── Teil 1: Bewertungsbogen ── */
-            const v = viewByPartId[partId] ?? null;
-            const isLoading = !!loadingByPart[partId];
-            const openSet = openAreasByPartId[partId] ?? new Set<number>();
-            const partHasDirty = v?.areas?.some((a) => a.criteria?.some((c) => c._dirty)) ?? false;
-            const totalMaxPoints = v?.areas?.reduce(
-              (acc, a) => acc + a.criteria.reduce((s, c) => s + (c.max_points ?? 0), 0),
-              0
-            ) ?? 0;
-
-            return (
-              <TabsContent key={partId} value={String(partId)} className="mt-4">
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-
-                  {/* Sheet Header */}
-                  <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2">
-                    <div className="flex items-center gap-3">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h2 className="font-semibold text-base">Bewertungsbogen</h2>
-                          <Part1ModeBadge mode={effectiveMode} />
-                        </div>
+                  );
+                }
+                const v = viewByPartId[partId] ?? null;
+                const isLoading = !!loadingByPart[partId];
+                const openSet = openAreasByPartId[partId] ?? new Set<number>();
+                const partHasDirty = v?.areas?.some((a) => a.criteria?.some((c) => c._dirty)) ?? false;
+                const totalMaxPoints = v?.areas?.reduce(
+                  (acc, a) => acc + a.criteria.reduce((s, c) => s + (c.max_points ?? 0), 0), 0
+                ) ?? 0;
+                return (
+                  <div key={partId} className="bg-white rounded-xl shadow-sm border border-gray-200">
+                    <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h2 className="font-semibold text-base">Bewertungsbogen</h2>
+                        <Part1ModeBadge mode={effectiveMode} />
                         {v && (
-                          <p className="text-xs text-gray-500 mt-0.5">
-                            Sheet #{v.exam_grading_sheet_id} · Status:{" "}
-                            <span className={v.status === "submitted" ? "text-green-600 font-medium" : ""}>
-                              {v.status}
-                            </span>
-                          </p>
+                          <span className="text-xs text-gray-500">
+                            Sheet #{v.exam_grading_sheet_id} · <span className={v.status === "submitted" ? "text-green-600 font-medium" : ""}>{v.status}</span>
+                          </span>
                         )}
                       </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <div className="flex items-center gap-1.5 mr-1">
-                        <span className="text-xs text-gray-500">Eingabe:</span>
-                        <Button type="button" size="sm" variant={mode === "grades" ? "default" : "outline"} onClick={() => setModePersisted("grades")} disabled={isLoading}>
-                          Noten
-                        </Button>
-                        <Button type="button" size="sm" variant={mode === "points" ? "default" : "outline"} onClick={() => setModePersisted("points")} disabled={isLoading}>
-                          Punkte
-                        </Button>
-                      </div>
-                      <Button size="sm" variant="outline" onClick={() => openAllAreas(partId)} disabled={!v || isLoading}>Alle öffnen</Button>
-                      <Button size="sm" variant="outline" onClick={() => closeAllAreas(partId)} disabled={!v || isLoading}>Alle schließen</Button>
-                      <div className="w-px h-6 bg-gray-200" />
-                      <Button size="sm" variant="outline" onClick={() => handleSave(partId)} disabled={!v || saving || !partHasDirty}>
-                        {saving ? "Speichern …" : "Speichern"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="bg-green-600 hover:bg-green-700 text-white"
-                        onClick={() => handleSubmit(partId)}
-                        disabled={!v || submitting || v?.status === "submitted"}
-                      >
-                        {submitting ? "Einreichen …" : v?.status === "submitted" ? "✓ Eingereicht" : "Einreichen"}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Sheet Body */}
-                  <div className="p-4">
-                    {isLoading && (
-                      <div className="flex items-center gap-2 text-sm text-gray-500 py-6 justify-center">
-                        <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                        Bewertungsbogen wird geladen …
-                      </div>
-                    )}
-                    {!isLoading && !v && (
-                      <div className="text-sm text-gray-500 py-4 text-center">Kein Bewertungsbogen verfügbar.</div>
-                    )}
-
-                    {!isLoading && v && (
-                      <div className="space-y-3">
-
-                        {/* Modus-Infozeile */}
-                        <div className={[
-                          "flex items-center gap-2.5 text-xs px-3 py-2.5 rounded-lg border",
-                          effectiveMode === "presentation"
-                            ? "bg-blue-50 border-blue-100 text-blue-700"
-                            : "bg-orange-50 border-orange-100 text-orange-700",
-                        ].join(" ")}>
-                          <Part1ModeBadge mode={effectiveMode} />
-                          <span>
-                            {effectiveMode === "presentation"
-                              ? "Bewertungsbogen Präsentation einer Ausbildungssituation"
-                              : "Bewertungsbogen Durchführung einer Ausbildungssituation"}
-                          </span>
-                          <span className="ml-auto font-semibold">
-                            Max. {totalMaxPoints.toFixed(0)} Pkt.
-                          </span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center gap-1.5 mr-1">
+                          <span className="text-xs text-gray-500">Eingabe:</span>
+                          <Button type="button" size="sm" variant={mode === "grades" ? "default" : "outline"} onClick={() => setModePersisted("grades")} disabled={isLoading}>Noten</Button>
+                          <Button type="button" size="sm" variant={mode === "points" ? "default" : "outline"} onClick={() => setModePersisted("points")} disabled={isLoading}>Punkte</Button>
                         </div>
-
-                        {v.areas.map((area) => {
-                          const isOpen = openSet.has(area.grading_area_id);
-                          const { missing, total } = getAreaOpenCount(area);
-                          const { sumPoints, maxPoints } = getAreaPoints(area);
-
-                          return (
-                            <div key={area.grading_area_id} className="border border-gray-200 rounded-lg overflow-hidden">
-                              <button
-                                type="button"
-                                onClick={() => toggleArea(partId, area.grading_area_id)}
-                                className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex items-center justify-between transition-colors"
-                              >
-                                <div className="text-left">
-                                  <div className="font-semibold text-sm">{area.area_number}. {area.title}</div>
-                                  {area.description && <div className="text-xs text-gray-500 mt-0.5">{area.description}</div>}
-                                </div>
-                                <div className="flex items-center gap-2 shrink-0 ml-2">
-                                  {missing > 0 ? (
-                                    <Badge className="bg-amber-50 border border-amber-200 text-amber-700 text-xs font-normal">
-                                      {missing} offen
-                                    </Badge>
-                                  ) : total > 0 ? (
-                                    <Badge className="bg-green-50 border border-green-200 text-green-700 text-xs font-normal">
-                                      ✓
-                                    </Badge>
-                                  ) : null}
-                                  <Badge className="bg-transparent border border-gray-300 text-gray-600 text-xs font-normal">
-                                    {fmtPoints(sumPoints)} / {fmtMaxPoints(maxPoints)} Pkt.
-                                  </Badge>
-                                  <span className="text-gray-400 text-xs">{isOpen ? "▲" : "▼"}</span>
-                                </div>
-                              </button>
-
-                              {isOpen && (
-                                <div className="p-3 space-y-3">
-                                  {area.criteria.map((c) => {
-                                    const achieved = getCriterionAchievedPoints(c);
-                                    const hintOpen = !!openHintsByItemId[c.exam_grading_item_id];
-                                    const pct = c.max_points > 0 ? Math.round((achieved / c.max_points) * 100) : 0;
-
-                                    return (
-                                      <div key={c.exam_grading_item_id} className="border border-gray-200 rounded-lg p-3">
-                                        <div className="flex items-start justify-between gap-3">
-                                          <div className="min-w-0">
-                                            <div className="text-sm font-medium">{c.criterion_number}. {c.criterion_title}</div>
-                                            <div className="text-xs text-gray-500 mt-0.5">
-                                              {fmtPoints(achieved)} / {fmtMaxPoints(c.max_points)} Pkt.
-                                              {mode === "points" && <span className="ml-1">({pct}%)</span>}
-                                              {mode === "grades" && <span className="ml-1.5">· Note: {formatSchoolGrade(c.grade ?? null)}</span>}
-                                              {c._dirty && <span className="ml-2 text-amber-600 font-medium">● geändert</span>}
+                        <Button size="sm" variant="outline" onClick={() => openAllAreas(partId)} disabled={!v || isLoading}>Alle öffnen</Button>
+                        <Button size="sm" variant="outline" onClick={() => closeAllAreas(partId)} disabled={!v || isLoading}>Alle schließen</Button>
+                        <div className="w-px h-6 bg-gray-200" />
+                        <Button size="sm" variant="outline" onClick={() => handleSave(partId)} disabled={!v || saving || !partHasDirty}>{saving ? "Speichern …" : "Speichern"}</Button>
+                        <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => handleSubmit(partId)} disabled={!v || submitting || v?.status === "submitted"}>
+                          {submitting ? "Einreichen …" : v?.status === "submitted" ? "✓ Eingereicht" : "Einreichen"}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      {isLoading && <div className="flex items-center gap-2 text-sm text-gray-500 py-6 justify-center"><div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />Bewertungsbogen wird geladen …</div>}
+                      {!isLoading && !v && <div className="text-sm text-gray-500 py-4 text-center">Kein Bewertungsbogen verfügbar.</div>}
+                      {!isLoading && v && (
+                        <div className="space-y-3">
+                          <div className={["flex items-center gap-2.5 text-xs px-3 py-2.5 rounded-lg border", effectiveMode === "presentation" ? "bg-blue-50 border-blue-100 text-blue-700" : "bg-orange-50 border-orange-100 text-orange-700"].join(" ")}>
+                            <Part1ModeBadge mode={effectiveMode} />
+                            <span>{effectiveMode === "presentation" ? "Bewertungsbogen Präsentation einer Ausbildungssituation" : "Bewertungsbogen Durchführung einer Ausbildungssituation"}</span>
+                            <span className="ml-auto font-semibold">Max. {totalMaxPoints.toFixed(0)} Pkt.</span>
+                          </div>
+                          {v.areas.map((area) => {
+                            const isOpen = openSet.has(area.grading_area_id);
+                            const { missing, total } = getAreaOpenCount(area);
+                            const { sumPoints, maxPoints } = getAreaPoints(area);
+                            return (
+                              <div key={area.grading_area_id} className="border border-gray-200 rounded-lg overflow-hidden">
+                                <button type="button" onClick={() => toggleArea(partId, area.grading_area_id)} className="w-full px-4 py-3 bg-gray-50 hover:bg-gray-100 flex items-center justify-between transition-colors">
+                                  <div className="text-left">
+                                    <div className="font-semibold text-sm">{area.area_number}. {area.title}</div>
+                                    {area.description && <div className="text-xs text-gray-500 mt-0.5">{area.description}</div>}
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0 ml-2">
+                                    {missing > 0 ? (
+                                      <Badge className="bg-amber-50 border border-amber-200 text-amber-700 text-xs font-normal">{missing} offen</Badge>
+                                    ) : total > 0 ? (
+                                      <Badge className="bg-green-50 border border-green-200 text-green-700 text-xs font-normal">✓</Badge>
+                                    ) : null}
+                                    <Badge className="bg-transparent border border-gray-300 text-gray-600 text-xs font-normal">{fmtPoints(sumPoints)} / {fmtMaxPoints(maxPoints)} Pkt.</Badge>
+                                    <span className="text-gray-400 text-xs">{isOpen ? "▲" : "▼"}</span>
+                                  </div>
+                                </button>
+                                {isOpen && (
+                                  <div className="divide-y divide-gray-100">
+                                    {area.criteria.map((c) => {
+                                      const achieved = getCriterionAchievedPoints(c);
+                                      const hintOpen = !!openHintsByItemId[c.exam_grading_item_id];
+                                      const hasGrade = c.grade != null;
+                                      const hasPoints = c.points != null;
+                                      const hasValue = mode === "grades" ? hasGrade : hasPoints;
+                                      return (
+                                        <div key={c.exam_grading_item_id} className={["transition-colors", hasValue ? "bg-white" : "bg-gray-50/50"].join(" ")}>
+                                          <div className="flex items-center gap-2 px-3 py-2.5">
+                                            <div className="flex-1 min-w-0">
+                                              <span className="text-sm font-medium text-gray-800">{c.criterion_number}. {c.criterion_title}</span>
+                                              <span className="ml-2 text-xs text-gray-400">max. {fmtMaxPoints(c.max_points)} Pkt.</span>
+                                              {c._dirty && <span className="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-amber-400 align-middle" title="Nicht gespeichert" />}
                                             </div>
-                                          </div>
-                                          {c.criterion_description && (
-                                            <Button type="button" size="sm" variant="ghost" className="text-xs text-gray-400 shrink-0" onClick={() => toggleHint(c.exam_grading_item_id)}>
-                                              {hintOpen ? "Hinweise ▲" : "Hinweise ▼"}
-                                            </Button>
-                                          )}
-                                        </div>
-
-                                        <div className={["mt-3 grid gap-3", hintOpen ? "grid-cols-1 lg:grid-cols-[1fr_280px]" : "grid-cols-1"].join(" ")}>
-                                          <div className="space-y-3">
-                                            {mode === "grades" ? (
-                                              <GradePicker value={c.grade ?? null} onChange={(next) => handleGradeChanged(partId, area.grading_area_id, c, next)} />
-                                            ) : (
-                                              <div>
-                                                <div className="text-xs text-gray-500 mb-1">Punkte (max. {fmtMaxPoints(c.max_points)})</div>
+                                            {hasValue && (
+                                              <div className="text-xs font-semibold text-gray-600 shrink-0 w-16 text-right">
+                                                {mode === "grades" ? <span className="text-blue-700">Note {formatSchoolGrade(c.grade ?? null)}</span> : <span>{fmtPoints(achieved)} Pkt.</span>}
+                                              </div>
+                                            )}
+                                            {mode === "grades" && (
+                                              <div className="flex gap-1 shrink-0">
+                                                {[1, 2, 3, 4, 5, 6].map((g) => {
+                                                  const selected = c.grade === g;
+                                                  return (
+                                                    <button key={g} type="button" onClick={() => handleGradeChanged(partId, area.grading_area_id, c, selected ? null : g)}
+                                                      className={["w-8 h-8 rounded-md text-sm font-semibold border transition-all",
+                                                        selected ? g <= 2 ? "bg-green-600 border-green-600 text-white" : g <= 4 ? "bg-blue-600 border-blue-600 text-white" : "bg-red-500 border-red-500 text-white"
+                                                          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400 hover:bg-gray-50"].join(" ")}>
+                                                      {g}
+                                                    </button>
+                                                  );
+                                                })}
+                                              </div>
+                                            )}
+                                            {mode === "points" && (
+                                              <div className="flex items-center gap-1 shrink-0">
                                                 <PointsPicker value={c.points ?? null} maxPoints={c.max_points} onChange={(next) => handlePointsChanged(partId, area.grading_area_id, c, next)} />
                                               </div>
                                             )}
-                                            <div>
-                                              <label className="block text-xs text-gray-500 mb-1">Kommentar / Begründung</label>
-                                              <textarea
-                                                rows={2}
-                                                value={c.comment ?? ""}
-                                                onChange={(e) => updateCriterion(partId, area.grading_area_id, c.exam_grading_item_id, { comment: e.target.value })}
-                                                className="w-full border rounded-md px-2 py-1.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                placeholder="Begründung der Bewertung …"
-                                              />
-                                            </div>
+                                            <button type="button" title="Kommentar / Begründung" onClick={() => toggleHint(c.exam_grading_item_id)}
+                                              className={["shrink-0 w-8 h-8 rounded-md border flex items-center justify-center text-sm transition-all",
+                                                (hintOpen || c.comment) ? "bg-blue-50 border-blue-300 text-blue-600" : "bg-white border-gray-200 text-gray-400 hover:border-gray-400"].join(" ")}>
+                                              💬
+                                            </button>
                                           </div>
-
                                           {hintOpen && (
-                                            <div className="border rounded-lg bg-gray-50 p-3">
-                                              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Bewertungshinweise</div>
-                                              <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">
-                                                {c.criterion_description?.trim() || "Keine Hinweise hinterlegt."}
-                                              </div>
+                                            <div className="px-3 pb-3 grid gap-2 grid-cols-1 lg:grid-cols-[1fr_auto]">
+                                              <textarea rows={2} autoFocus value={c.comment ?? ""} onChange={(e) => updateCriterion(partId, area.grading_area_id, c.exam_grading_item_id, { comment: e.target.value })}
+                                                className="w-full border border-gray-200 rounded-md px-2 py-1.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                                                placeholder="Begründung der Bewertung …" />
+                                              {c.criterion_description && (
+                                                <div className="border rounded-md bg-amber-50 border-amber-200 px-3 py-2 text-xs text-amber-800 max-w-xs">
+                                                  <div className="font-semibold mb-1 uppercase tracking-wide text-amber-600">Hinweis</div>
+                                                  {c.criterion_description.trim()}
+                                                </div>
+                                              )}
                                             </div>
                                           )}
+                                          {!hintOpen && c.comment && (
+                                            <div className="px-3 pb-2"><p className="text-xs text-gray-500 italic truncate">{c.comment}</p></div>
+                                          )}
                                         </div>
-                                      </div>
-                                    );
-                                  })}
-
-                                  {area.criteria.length === 0 && (
-                                    <div className="text-sm text-gray-500 py-2">Keine Kriterien in diesem Bereich.</div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {v.areas.length === 0 && (
-                          <div className="text-sm text-gray-500 py-6 text-center">
-                            Für diesen Prüfungsteil sind noch keine Bereiche/Kriterien hinterlegt.
-                          </div>
-                        )}
-                      </div>
-                    )}
+                                      );
+                                    })}
+                                    {area.criteria.length === 0 && <div className="text-sm text-gray-500 py-2 px-3">Keine Kriterien in diesem Bereich.</div>}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
+                );
+              })}
+            </TabsContent>
+
+            {/* ── Tab: Fachgespräch ── */}
+            <TabsContent value="fachgespraech" className="mt-4">
+              <ExpertDiscussionForm examId={examId} />
+            </TabsContent>
+
+            {/* ── Tab: Protokoll (Gesamtergebnis) ── */}
+            <TabsContent value="konsolidierung" className="mt-4">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center space-y-3">
+                <div className="text-4xl">📋</div>
+                <div className="font-semibold text-gray-700">Protokoll & Gesamtergebnis</div>
+                <div className="text-sm text-gray-500 max-w-xs mx-auto leading-relaxed">
+                  Zusammenführung aller Bewertungen, Gesamtpunktzahl und finale Note.<br />
+                  <span className="text-xs text-gray-400 mt-1 block">Wird in einem späteren Release freigeschaltet.</span>
                 </div>
-              </TabsContent>
-            );
-          })}
-        </Tabs>
-      ) : (
-        <div className="text-sm text-gray-500">Keine Prüfungsteile vorhanden.</div>
+              </div>
+            </TabsContent>
+          </Tabs>
+        </>
       )}
+
     </div>
   );
 }
