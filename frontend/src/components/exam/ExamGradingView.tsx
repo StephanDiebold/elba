@@ -3,7 +3,7 @@
 // Bewertungslogik als wiederverwendbare Komponente (prop statt useParams).
 //
 // Phase 3: Part1Mode Labels, Badges, Guard, Cache-Reset
-// Phase 3b: ExamTimer – 15-min Countdown ab exam.started_at
+// Phase 4: ExamPartTimerBar – per-Part Timer (sticky)
 //
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -26,7 +26,6 @@ import {
 
 import type {
   ExamWithParts,
-  ExamPart,
   MemberGradingSheetView,
   MemberArea,
   MemberCriterionItem,
@@ -116,12 +115,6 @@ function Part1ModeBadge({ mode }: { mode: Part1Mode | string | null | undefined 
   );
 }
 
-function partTabLabel(part: ExamPart, examPart1Mode: Part1Mode | null | undefined): string {
-  if (part.part_number === 2) return "Teil 2 – Fachgespräch";
-  const effectiveMode = part.part_mode ?? examPart1Mode ?? null;
-  if (effectiveMode) return `Teil ${part.part_number} – ${part1ModeLabel(effectiveMode)}`;
-  return `Teil ${part.part_number}`;
-}
 
 // ─────────────────────────────────────────────
 // Props
@@ -139,8 +132,6 @@ interface ExamGradingViewProps {
 export default function ExamGradingView({ examId, onExamChanged }: ExamGradingViewProps) {
   const [exam, setExam] = useState<ExamWithParts | null>(null);
   const [loadingExam, setLoadingExam] = useState(false);
-
-  const [selectedPartId, setSelectedPartId] = useState<number | null>(null);
 
   const [viewByPartId, setViewByPartId] = useState<Record<number, LocalView | null>>({});
   const [loadingByPart, setLoadingByPart] = useState<Record<number, boolean>>({});
@@ -163,10 +154,6 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
   // Reset bei examId-Wechsel
   useEffect(() => {
     setExam(null);
-  // Reset bei examId-Wechsel
-  useEffect(() => {
-    setExam(null);
-    setSelectedPartId(null);
     setViewByPartId({});
     setLoadingByPart({});
     setOpenAreasByPartId({});
@@ -186,7 +173,6 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
         const data = await fetchExamWithParts(examId);
         if (cancelled) return;
         setExam(data);
-        if (data.parts.length > 0) setSelectedPartId(data.parts[0].exam_part_id);
         onExamChanged?.(data);
       } catch (err) {
         console.error(err);
@@ -202,25 +188,18 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
   useEffect(() => { viewCacheRef.current = viewByPartId; }, [viewByPartId]);
   useEffect(() => { loadingCacheRef.current = loadingByPart; }, [loadingByPart]);
 
-  /* ─── Lazy-Load GradingSheet View per Part ─── */
+  /* ─── Lazy-Load GradingSheet wenn Teil-1-Tab aktiv ─── */
   useEffect(() => {
-    if (!selectedPartId) return;
-    const partId = selectedPartId;
+    if (activeTab !== "teil1") return;
+    const part1 = exam?.parts?.find((p) => p.part_number === 1) ?? null;
+    if (!part1) return;
+
+    const partId = part1.exam_part_id;
 
     if (Object.prototype.hasOwnProperty.call(viewCacheRef.current, partId)) return;
     if (loadingCacheRef.current[partId]) return;
 
-    const selectedPart = exam?.parts?.find((p) => p.exam_part_id === partId) ?? null;
-
-    // Teil 2 braucht keinen GradingSheet
-    if (selectedPart?.part_number === 2) {
-      setViewByPartId((prev) => ({ ...prev, [partId]: null }));
-      setOpenAreasByPartId((prev) => ({ ...prev, [partId]: new Set() }));
-      return;
-    }
-
-    // Teil 1: nur laden wenn Modus bekannt (Prüfung gestartet)
-    const effectiveMode = selectedPart?.part_mode ?? exam?.part1_mode ?? null;
+    const effectiveMode = part1.part_mode ?? exam?.part1_mode ?? null;
     if (!effectiveMode) return;
 
     let cancelled = false;
@@ -258,7 +237,7 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
     })();
 
     return () => { cancelled = true; };
-  }, [selectedPartId, exam]);
+  }, [activeTab, exam]);
 
   /* ─── Helpers ─── */
 
@@ -439,11 +418,7 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
     // Cache leeren → korrekter Sheet (Präs. oder Durchf.) wird geladen
     viewCacheRef.current = {};
     setViewByPartId({});
-    if (data.parts.length > 0) {
-      const firstId = data.parts[0].exam_part_id;
-      setSelectedPartId(null);
-      setTimeout(() => setSelectedPartId(firstId), 0);
-    }
+    if (data.started_at && activeTab === "protokoll") setActiveTab("teil1");
   };
 
   /* ─── Render ─── */
@@ -485,27 +460,16 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
       {/* ── Nach dem Start: Timer + Tabs ── */}
       {isStarted && (
         <>
-          {/* Timer + Stop-Button Zeile */}
-          <div className="flex items-center gap-3">
-            <div className="flex-1">
-              <ExamTimer
-                remaining={timerRemaining}
-                totalSeconds={DURATION_SECONDS}
-                paused={exam.status === "paused"}
-                warnSeconds={120}
-              />
-            </div>
-          </div>
 
           {/* Haupt-Tabs */}
           <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
             <TabsList className="w-full justify-start border-b border-gray-200 bg-transparent rounded-none h-auto p-0 gap-0">
               {(["protokoll", "teil1", "fachgespraech", "konsolidierung"] as const).map((tab) => {
                 const labels: Record<string, string> = {
-                  protokoll: "✅ Check-In",
-                  teil1: `📊 ${tab1Label}`,
-                  fachgespraech: "💬 Fachgespräch",
-                  konsolidierung: "📋 Protokoll",
+                  protokoll: "Check-In",
+                  teil1: tab1Label,
+                  fachgespraech: "Fachgespräch",
+                  konsolidierung: "Protokoll",
                 };
                 return (
                   <TabsTrigger
@@ -530,6 +494,10 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
 
             {/* ── Tab: Präsentation / Durchführung ── */}
             <TabsContent value="teil1" className="mt-4">
+              {/* Teil-1-Timer */}
+              {exam.parts.filter(p => p.part_number === 1).map(p => (
+                <ExamPartTimerBar key={p.exam_part_id} part={p} onChanged={handleAfterStart} />
+              ))}
               {/* Inhalte aus dem bisherigen Teil-1-Block */}
               {exam.parts.filter(p => p.part_number === 1).map((part) => {
                 const partId = part.exam_part_id;
@@ -690,6 +658,18 @@ export default function ExamGradingView({ examId, onExamChanged }: ExamGradingVi
 
             {/* ── Tab: Fachgespräch ── */}
             <TabsContent value="fachgespraech" className="mt-4">
+              {/* Teil-2-Timer */}
+              {(() => {
+                const p2 = exam.parts.find(p => p.part_number === 2);
+                const p1done = exam.parts.find(p => p.part_number === 1)?.status === "done";
+                return p2 ? (
+                  <ExamPartTimerBar
+                    part={p2}
+                    locked={!p1done}
+                    onChanged={handleAfterStart}
+                  />
+                ) : null;
+              })()}
               <ExpertDiscussionForm examId={examId} />
             </TabsContent>
 

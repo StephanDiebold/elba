@@ -122,6 +122,7 @@ class ExamPart(Base):
 
     # Timer pro Prüfungsteil
     started_at = Column(DateTime, nullable=True)
+    paused_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
     total_paused_seconds = Column(Integer, nullable=False, default=0)
 

@@ -1,18 +1,13 @@
 // src/components/exam/ExamPartTimerBar.tsx
-//
-// Sticky-Statusbar mit zwei unabhängigen Part-Timern (je 15 Min).
-// Teil 2 ist gesperrt bis Teil 1 done ist.
+// Kompakter Timer-Streifen oben im Tab
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
-import { startExamPart, stopExamPart, resetExamPart } from "@/lib/api/exam.api";
+import { startExamPart, pauseExamPart, stopExamPart, resetExamPart } from "@/lib/api/exam.api";
 import type { ExamPart } from "@/lib/api/exam.api";
 
-// ─── Konstanten ───────────────────────────────────────────────
 const PART_DURATION_SEC = 15 * 60;
-const WARN_SEC = 120;
 
-// ─── Helpers ──────────────────────────────────────────────────
 function toUtcMs(iso: string): number {
   if (/[Zz]$/.test(iso) || /[+-]\d{2}:\d{2}$/.test(iso)) return new Date(iso).getTime();
   return new Date(iso + "Z").getTime();
@@ -20,56 +15,39 @@ function toUtcMs(iso: string): number {
 
 function fmtTime(sec: number): string {
   if (sec < 0) sec = 0;
-  const m = Math.floor(sec / 60).toString().padStart(2, "0");
-  const s = (sec % 60).toString().padStart(2, "0");
-  return `${m}:${s}`;
+  return `${Math.floor(sec / 60).toString().padStart(2, "0")}:${(sec % 60).toString().padStart(2, "0")}`;
 }
 
 function calcRemaining(part: ExamPart): number {
   if (!part.started_at) return PART_DURATION_SEC;
-  if (part.status === "done" && part.ended_at) {
-    const elapsed = Math.floor(
-      (toUtcMs(part.ended_at) - toUtcMs(part.started_at) - (part.total_paused_seconds ?? 0) * 1000) / 1000
-    );
-    return Math.max(PART_DURATION_SEC - elapsed, 0);
-  }
-  if (part.status === "in_progress") {
-    const elapsed = Math.floor(
-      (Date.now() - toUtcMs(part.started_at) - (part.total_paused_seconds ?? 0) * 1000) / 1000
-    );
-    return Math.max(PART_DURATION_SEC - elapsed, 0);
-  }
+  const pausedMs = (part.total_paused_seconds ?? 0) * 1000;
+  if (part.status === "done" && part.ended_at)
+    return Math.max(PART_DURATION_SEC - Math.floor((toUtcMs(part.ended_at) - toUtcMs(part.started_at) - pausedMs) / 1000), 0);
+  if (part.status === "paused" && part.paused_at)
+    return Math.max(PART_DURATION_SEC - Math.floor((toUtcMs(part.paused_at) - toUtcMs(part.started_at) - pausedMs) / 1000), 0);
+  if (part.status === "in_progress")
+    return Math.max(PART_DURATION_SEC - Math.floor((Date.now() - toUtcMs(part.started_at) - pausedMs) / 1000), 0);
   return PART_DURATION_SEC;
 }
 
-// ─── SinglePartTimer ──────────────────────────────────────────
-interface SinglePartTimerProps {
-  part: ExamPart;
-  locked?: boolean;        // gesperrt (Teil 2 vor Teil 1 done)
-  onChanged: () => Promise<void>;
-}
+interface Props { part: ExamPart; locked?: boolean; onChanged: () => Promise<void>; }
 
-function SinglePartTimer({ part, locked, onChanged }: SinglePartTimerProps) {
+export default function ExamPartTimerBar({ part, locked, onChanged }: Props) {
   const [remaining, setRemaining] = useState(() => calcRemaining(part));
   const [busy, setBusy] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Timer-Tick
   useEffect(() => {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-
     if (part.status === "in_progress" && part.started_at) {
       const tick = () => {
         const r = calcRemaining(part);
         setRemaining(r);
         if (r <= 0) {
-          clearInterval(intervalRef.current!);
-          intervalRef.current = null;
-          // Auto-Stop nach 15 Min
-          stopExamPart(part.exam_part_id)
-            .then(() => onChanged())
-            .catch(() => {});
+          clearInterval(intervalRef.current!); intervalRef.current = null;
+          stopExamPart(part.exam_part_id).then(() => onChanged()).catch(() => {});
         }
       };
       tick();
@@ -78,156 +56,97 @@ function SinglePartTimer({ part, locked, onChanged }: SinglePartTimerProps) {
     } else {
       setRemaining(calcRemaining(part));
     }
-  }, [part.status, part.started_at, part.ended_at, part.total_paused_seconds]); // eslint-disable-line
+  }, [part.status, part.started_at, part.paused_at, part.ended_at, part.total_paused_seconds]); // eslint-disable-line
 
-  const handleStart = useCallback(async () => {
-    try {
-      setBusy(true);
-      await startExamPart(part.exam_part_id);
-      await onChanged();
-    } catch (e: any) {
-      toast.error(e?.detail ?? "Start fehlgeschlagen.");
-    } finally { setBusy(false); }
-  }, [part.exam_part_id, onChanged]);
+  const act = useCallback(async (fn: () => Promise<unknown>, successMsg?: string) => {
+    try { setBusy(true); await fn(); await onChanged(); if (successMsg) toast.success(successMsg); }
+    catch (e: any) { toast.error(e?.detail ?? "Fehler."); }
+    finally { setBusy(false); }
+  }, [onChanged]);
 
-  const handleStop = useCallback(async () => {
-    if (!confirmStop) {
-      setConfirmStop(true);
-      setTimeout(() => setConfirmStop(false), 3000);
-      return;
-    }
+  const handleStart  = () => act(() => startExamPart(part.exam_part_id));
+  const handlePause  = () => act(() => pauseExamPart(part.exam_part_id));
+  const handleStop   = () => {
+    if (!confirmStop) { setConfirmStop(true); setTimeout(() => setConfirmStop(false), 3000); return; }
     setConfirmStop(false);
-    try {
-      setBusy(true);
-      await stopExamPart(part.exam_part_id);
-      await onChanged();
-      toast.success(`Teil ${part.part_number} beendet.`);
-    } catch (e: any) {
-      toast.error(e?.detail ?? "Stop fehlgeschlagen.");
-    } finally { setBusy(false); }
-  }, [confirmStop, part.exam_part_id, part.part_number, onChanged]);
+    act(() => stopExamPart(part.exam_part_id), "Abgeschlossen.");
+  };
+  const handleReset  = () => {
+    if (!confirmReset) { setConfirmReset(true); setTimeout(() => setConfirmReset(false), 3000); return; }
+    setConfirmReset(false);
+    act(() => resetExamPart(part.exam_part_id));
+  };
 
-  const handleReset = useCallback(async () => {
-    try {
-      setBusy(true);
-      await resetExamPart(part.exam_part_id);
-      await onChanged();
-    } catch (e: any) {
-      toast.error(e?.detail ?? "Reset fehlgeschlagen.");
-    } finally { setBusy(false); }
-  }, [part.exam_part_id, onChanged]);
-
-  const isDone = part.status === "done";
-  const isRunning = part.status === "in_progress";
   const isPlanned = part.status === "planned";
-  const warn = remaining <= WARN_SEC && (isRunning || isDone);
+  const isRunning = part.status === "in_progress";
+  const isPaused  = part.status === "paused";
+  const isDone    = part.status === "done";
+  const warn      = remaining <= 120 && (isRunning || isPaused);
+  const pct       = Math.max(0, Math.min(100, (remaining / PART_DURATION_SEC) * 100));
+  const barColor  = remaining <= 60 ? "bg-red-400" : remaining <= 120 ? "bg-amber-400" : "bg-blue-400";
 
-  // Farben Fortschrittsbalken
-  const pct = Math.max(0, Math.min(100, (remaining / PART_DURATION_SEC) * 100));
-  const barColor = remaining <= 60 ? "bg-red-500"
-    : remaining <= WARN_SEC ? "bg-amber-400"
-    : "bg-blue-500";
+  // Status-Farben für den Timer-Wert
+  const timeColor = isDone ? "text-green-600" : warn ? "text-red-500" : isRunning ? "text-blue-600" : isPaused ? "text-amber-600" : "text-gray-400";
 
   return (
-    <div className={[
-      "flex-1 rounded-lg border px-3 py-2 transition-all",
-      locked ? "opacity-40 bg-gray-50 border-gray-200"
-        : isDone ? "bg-green-50 border-green-200"
-        : isRunning ? "bg-blue-50 border-blue-200"
-        : "bg-white border-gray-200",
-    ].join(" ")}>
+    <div className={`flex items-center gap-3 px-3 py-2 rounded-lg border mb-4 text-sm transition-colors ${
+      locked ? "opacity-40 pointer-events-none bg-gray-50 border-gray-200" :
+      isDone  ? "bg-green-50 border-green-200" :
+      isPaused? "bg-amber-50 border-amber-200" :
+      isRunning?"bg-blue-50 border-blue-200" :
+                "bg-gray-50 border-gray-200"
+    }`}>
 
-      {/* Kopfzeile: Label + Timer */}
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
-          Teil {part.part_number}
-          {part.part_mode && (
-            <span className="ml-1 normal-case font-normal text-gray-400">
-              · {part.part_mode === "presentation" ? "Präsentation" : "Durchführung"}
-            </span>
-          )}
-          {part.part_number === 2 && !part.part_mode && (
-            <span className="ml-1 normal-case font-normal text-gray-400">· Fachgespräch</span>
-          )}
-        </div>
-        <div className={[
-          "text-xl font-mono font-bold tabular-nums",
-          isDone ? "text-green-700"
-            : warn ? "text-red-600 animate-pulse"
-            : isRunning ? "text-blue-700"
-            : "text-gray-400",
-        ].join(" ")}>
-          {fmtTime(remaining)}
-        </div>
+      {/* Fortschrittsbalken links */}
+      <div className="w-24 h-1.5 rounded-full bg-gray-200 shrink-0 overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${pct}%` }} />
       </div>
 
-      {/* Fortschrittsbalken */}
-      <div className="h-1.5 rounded-full bg-gray-200 mb-2 overflow-hidden">
-        <div
-          className={["h-full rounded-full transition-all duration-500", barColor].join(" ")}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {/* Timer-Wert */}
+      <span className={`font-mono font-semibold tabular-nums text-sm w-12 shrink-0 ${timeColor} ${warn && isRunning ? "animate-pulse" : ""}`}>
+        {fmtTime(remaining)}
+      </span>
 
-      {/* Buttons */}
+      {/* Status-Text */}
+      <span className="text-xs text-gray-400 shrink-0">
+        {isDone ? "Abgeschlossen" : isPaused ? "Pausiert" : isRunning ? "Läuft" : "Bereit"}
+      </span>
+
+      {/* Buttons rechts */}
       {!locked && (
-        <div className="flex gap-1.5">
-          {isPlanned && (
+        <div className="flex gap-1.5 ml-auto shrink-0">
+          {(isPlanned || isPaused) && (
             <button onClick={handleStart} disabled={busy}
-              className="flex-1 py-1 px-2 rounded text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">
-              ▶ Start
+              className="px-2.5 py-1 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors">
+              {isPaused ? "▶ Fortsetzen" : "▶ Starten"}
             </button>
           )}
           {isRunning && (
-            <button onClick={handleStop} disabled={busy}
-              className={[
-                "flex-1 py-1 px-2 rounded text-xs font-semibold transition-colors",
-                confirmStop
-                  ? "bg-red-600 text-white hover:bg-red-700"
-                  : "bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200",
-              ].join(" ")}>
-              {confirmStop ? "✓ Bestätigen" : "⏹ Stop"}
+            <button onClick={handlePause} disabled={busy}
+              className="px-2.5 py-1 rounded-md bg-white border border-amber-300 text-amber-700 text-xs font-medium hover:bg-amber-50 disabled:opacity-50 transition-colors">
+              ⏸ Pause
             </button>
           )}
-          {isDone && (
-            <>
-              <div className="flex-1 py-1 px-2 rounded text-xs font-semibold text-center bg-green-100 text-green-700 border border-green-200">
-                ✓ Abgeschlossen
-              </div>
-              <button onClick={handleReset} disabled={busy}
-                className="py-1 px-2 rounded text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
-                ↺
-              </button>
-            </>
+          {(isRunning || isPaused) && (
+            <button onClick={handleStop} disabled={busy}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors disabled:opacity-50 ${
+                confirmStop ? "bg-red-500 text-white border-red-500" : "bg-white text-red-500 border-red-200 hover:bg-red-50"
+              }`}>
+              {confirmStop ? "Bestätigen" : "⏹ Stop"}
+            </button>
+          )}
+          {(isRunning || isPaused || isDone) && (
+            <button onClick={handleReset} disabled={busy}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors disabled:opacity-50 ${
+                confirmReset ? "bg-gray-600 text-white border-gray-600" : "bg-white text-gray-400 border-gray-200 hover:bg-gray-50"
+              }`}>
+              {confirmReset ? "Sicher?" : "↺"}
+            </button>
           )}
         </div>
       )}
-      {locked && (
-        <div className="text-xs text-gray-400 text-center py-0.5">Erst nach Abschluss von Teil 1</div>
-      )}
-    </div>
-  );
-}
 
-// ─── ExamPartTimerBar (Sticky) ────────────────────────────────
-interface ExamPartTimerBarProps {
-  parts: ExamPart[];
-  onChanged: () => Promise<void>;
-}
-
-export default function ExamPartTimerBar({ parts, onChanged }: ExamPartTimerBarProps) {
-  const part1 = parts.find((p) => p.part_number === 1) ?? null;
-  const part2 = parts.find((p) => p.part_number === 2) ?? null;
-  const part2Locked = part1?.status !== "done";
-
-  if (!part1 && !part2) return null;
-
-  return (
-    <div className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-gray-200 shadow-sm px-4 py-2">
-      <div className="flex gap-3">
-        {part1 && <SinglePartTimer part={part1} onChanged={onChanged} />}
-        {part2 && <SinglePartTimer part={part2} locked={part2Locked} onChanged={onChanged} />}
-      </div>
+      {locked && <span className="ml-auto text-xs text-gray-400">Verfügbar nach Teil 1</span>}
     </div>
   );
 }

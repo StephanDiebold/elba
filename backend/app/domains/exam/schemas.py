@@ -216,6 +216,7 @@ class ExamPartOut(BaseModel):
     grade: Optional[float] = None
     # Timer-Felder
     started_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     total_paused_seconds: int = 0
     model_config = ConfigDict(from_attributes=True)

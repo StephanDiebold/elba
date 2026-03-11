@@ -506,15 +506,15 @@ def update_final_sheet_endpoint(exam_part_id: int, payload: FinalSheetDecisionIn
     _ = save_final_sheet_decisions(db=db, exam_part_id=exam_part_id, decisions=payload)
     return build_final_sheet_view(db, exam_part_id=exam_part_id)
 
-
 # ==================================================
-# ExamPart Timer: Start / Stop / Reset
+# ExamPart Timer: Start / Pause / Resume / Stop / Reset
 # ==================================================
 
 class ExamPartTimerOut(BaseModel):
     exam_part_id: int
     status: str
     started_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     total_paused_seconds: int = 0
     model_config = ConfigDict(from_attributes=True)
@@ -526,7 +526,7 @@ def start_exam_part(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Startet einen Prüfungsteil. Teil 1 muss abgeschlossen sein bevor Teil 2 starten kann."""
+    """Startet oder setzt einen pausierten Part fort."""
     part = db.get(ExamPart, exam_part_id)
     if not part:
         raise HTTPException(status_code=404, detail="ExamPart not found")
@@ -538,21 +538,44 @@ def start_exam_part(
             ExamPart.part_number == 1,
         ).first()
         if part1 and part1.status != "done":
-            raise HTTPException(
-                status_code=409,
-                detail="Teil 1 muss zuerst abgeschlossen werden (status=done).",
-            )
-
-    if part.status not in ("planned", "in_progress"):
-        raise HTTPException(status_code=409, detail=f"Part cannot be started (status={part.status}).")
+            raise HTTPException(status_code=409, detail="Teil 1 muss zuerst abgeschlossen sein.")
 
     now = datetime.utcnow()
-    if part.status == "planned":
+
+    if part.status == "paused" and getattr(part, "paused_at", None):
+        # Fortsetzen: Pausenzeit akkumulieren
+        pause_secs = int((now - part.paused_at).total_seconds())
+        part.total_paused_seconds = (part.total_paused_seconds or 0) + pause_secs
+        part.paused_at = None
+    elif part.status == "planned":
         part.started_at = now
         part.ended_at = None
+        part.paused_at = None
         part.total_paused_seconds = 0
+    elif part.status != "in_progress":
+        raise HTTPException(status_code=409, detail=f"Part cannot be started (status={part.status}).")
 
     part.status = "in_progress"
+    db.commit()
+    db.refresh(part)
+    return part
+
+
+@router.post("/exam-parts/{exam_part_id}/pause", response_model=ExamPartTimerOut)
+def pause_exam_part(
+    exam_part_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Pausiert einen laufenden Part."""
+    part = db.get(ExamPart, exam_part_id)
+    if not part:
+        raise HTTPException(status_code=404, detail="ExamPart not found")
+    if part.status != "in_progress":
+        raise HTTPException(status_code=409, detail=f"Part cannot be paused (status={part.status}).")
+
+    part.status = "paused"
+    part.paused_at = datetime.utcnow()
     db.commit()
     db.refresh(part)
     return part
@@ -564,16 +587,20 @@ def stop_exam_part(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Stoppt einen Prüfungsteil → status=done, ended_at=jetzt."""
+    """Beendet einen Part → status=done."""
     part = db.get(ExamPart, exam_part_id)
     if not part:
         raise HTTPException(status_code=404, detail="ExamPart not found")
-
-    if part.status not in ("in_progress",):
+    if part.status not in ("in_progress", "paused"):
         raise HTTPException(status_code=409, detail=f"Part cannot be stopped (status={part.status}).")
 
+    now = datetime.utcnow()
+    if part.status == "paused" and getattr(part, "paused_at", None):
+        part.total_paused_seconds = (part.total_paused_seconds or 0) + int((now - part.paused_at).total_seconds())
+        part.paused_at = None
+
     part.status = "done"
-    part.ended_at = datetime.utcnow()
+    part.ended_at = now
     db.commit()
     db.refresh(part)
     return part
@@ -585,13 +612,14 @@ def reset_exam_part(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Setzt einen Prüfungsteil zurück → status=planned, Timer gelöscht."""
+    """Setzt einen Part komplett zurück."""
     part = db.get(ExamPart, exam_part_id)
     if not part:
         raise HTTPException(status_code=404, detail="ExamPart not found")
 
     part.status = "planned"
     part.started_at = None
+    part.paused_at = None
     part.ended_at = None
     part.total_paused_seconds = 0
     db.commit()
